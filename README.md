@@ -1,6 +1,8 @@
-# x402 Payment Gateway Template
+# x402 Payment Gateway with Bun and lmdb
 
 A production-ready, self-hosted payment gateway that implements the [x402 protocol](https://x402.org) — HTTP-native micropayments for APIs. Accept stablecoin payments (USDC) per-request with no API keys, no subscriptions, and no intermediaries.
+
+Forked from [azep-ninja's x402-gateway-template](https://github.com/azep-ninja/x402-gateway-template) to run as a microservice: Bun instead of Express; lmdb instead of Upstash Redis; Typescript and full test suite.
 
 **Fork this repo, configure your backend, and start accepting crypto micropayments in minutes.**
 
@@ -25,29 +27,29 @@ No wallets to integrate. No payment pages. Just HTTP headers.
 - **MegaETH support** — USDM (18 decimals) via Meridian facilitator
 - **Hybrid settlement** — Local on-chain settlement via [viem](https://viem.sh) + optional external facilitators
 - **Solana support** — SVM payments via [@x402/svm](https://www.npmjs.com/package/@x402/svm) facilitator pattern
-- **Replay protection** — Redis-backed nonce tracking prevents double-spending
+- **Replay protection** — nonce tracking prevents double-spending
 - **Idempotency** — `payment-identifier` extension for safe retries without double-charging
 - **Agent discovery** — `/accepted` endpoint with full pricing, schemas, and network info
 - **x402 well-known** — `/.well-known/x402` discovery document
 - **Zero lock-in** — Your backend never knows about x402; it just gets authenticated requests
-- **Deploy anywhere** — Docker-based; works on GCP Cloud Run, AWS ECS/Fargate, Railway, Fly.io, or bare metal
+- **Deploy small** — Bun microservice with LMDB
 
 ## Quick Start
 
 ```bash
 # Clone the template
-git clone https://github.com/YOUR_USERNAME/x402-gateway-template.git
-cd x402-gateway-template
+git clone https://github.com/artlu99/x402-gateway-bun-lmdb.git
+cd x402-gateway-bun-lmdb
 
 # Install dependencies
-npm install
+bun install
 
 # Configure
 cp .env.example .env
 # Edit .env with your values (see Configuration section)
 
 # Run locally
-npm run dev
+bun dev
 
 # Test
 curl http://localhost:8080/health
@@ -85,9 +87,9 @@ Client/Agent request
 
 ### 1. Define Your Routes
 
-Edit `src/config/routes.js` to define your paid API endpoints:
+Edit `src/config/routes.ts` to define your paid API endpoints:
 
-```js
+```ts
 export const ROUTE_CONFIG = {
   // Each key becomes a route prefix: /v1/{key}/*
   myapi: {
@@ -145,15 +147,6 @@ export const ROUTE_CONFIG = {
 | `SOLANA_FACILITATOR_PRIVATE_KEY` | Base58 private key for Solana fee payer |
 | `MY_PAY_TO_ADDRESS_SOL` | Solana wallet to receive USDC payments |
 
-#### Redis (required for replay protection)
-
-| Variable | Description |
-|----------|-------------|
-| `UPSTASH_REDIS_REST_URL` | Upstash Redis REST URL |
-| `UPSTASH_REDIS_REST_TOKEN` | Upstash Redis REST token |
-
-> **Tip:** [Upstash](https://upstash.com) has a generous free tier. Any Redis with REST API works.
-
 #### Optional Overrides
 
 | Variable | Description |
@@ -177,8 +170,8 @@ Fund it with small amounts of native gas tokens on each chain you enable.
 
 ### Basic Route
 
-1. Add route config in `src/config/routes.js`
-2. Register the route in `src/index.js`:
+1. Add route config in `src/config/routes.jt`
+2. Register the route in `src/index.ts`:
 
 ```js
 // Paid route
@@ -204,7 +197,7 @@ app.get('/v1/myapi/health', async (req, res) => {
 
 Map user-friendly paths to your backend's actual routes:
 
-```js
+```ts
 const PATH_ALIASES = {
   'analyze': 'internal-analyze-endpoint',
   'report':  'generate-full-report',
@@ -217,7 +210,7 @@ const resolvedSubpath = PATH_ALIASES[subpath] || subpath;
 ### New EVM Chain
 
 1. Verify the chain has **native Circle USDC** with EIP-3009 support
-2. Add to `src/config/routes.js`:
+2. Add to `src/config/routes.ts`:
 
 ```js
 const MY_CHAIN = {
@@ -238,7 +231,7 @@ const MY_CHAIN = {
 
 For chains where USDC doesn't support EIP-3009 yet:
 
-```js
+```ts
 const MY_CHAIN = {
   vm: 'evm',
   caip2: 'eip155:CHAIN_ID',
@@ -273,34 +266,7 @@ Requirements:
 
 ## Deployment
 
-### Docker (any platform)
-
-```bash
-docker build -t x402-gateway .
-docker run -p 8080:8080 --env-file .env x402-gateway
-```
-
-### GCP Cloud Run
-
-See [`docs/deploy-gcp.md`](docs/deploy-gcp.md) for full Cloud Run deployment with Secret Manager.
-
-```bash
-# Quick deploy
-gcloud run deploy x402-gateway \
-  --source . \
-  --region us-east1 \
-  --allow-unauthenticated \
-  --set-env-vars "BASE_RPC_URL=https://..." \
-  --set-secrets "SETTLEMENT_PRIVATE_KEY=x402-settlement-key:latest"
-```
-
-### AWS ECS / Fargate
-
-See [`docs/deploy-aws.md`](docs/deploy-aws.md).
-
-### Railway / Fly.io / Render
-
-See [`docs/deploy-paas.md`](docs/deploy-paas.md).
+Ask your LLM about running the Bun binary as a service or with `pm2`
 
 ## API Endpoints
 
@@ -335,7 +301,7 @@ Any wallet that supports the x402 protocol works:
 
 ## Client Example
 
-```js
+```ts
 import { x402Fetch } from '@x402/fetch';
 
 const res = await x402Fetch('https://your-gateway.com/v1/myapi/endpoint', {
@@ -351,22 +317,17 @@ const data = await res.json();
 
 ```
 ├── src/
-│   ├── index.js              # Express app, route registration
-│   ├── proxy.js              # Backend proxy (injects internal auth)
+│   ├── index.ts              # app, route registration
+│   ├── proxy.ts              # Backend proxy (injects internal auth)
 │   ├── middleware/
-│   │   └── x402.js           # Payment verification + settlement
+│   │   └── x402.ts           # Payment verification + settlement
 │   ├── config/
-│   │   └── routes.js         # Route definitions + network registry
+│   │   └── routes.ts         # Route definitions + network registry
 │   └── utils/
-│       └── redis.js          # Nonce tracking + idempotency cache
+│       ├── cors.ts           # cors headers
+│       └── redis.ts          # Nonce tracking + idempotency cache
 ├── public/
 │   └── index.html            # Landing page (optional)
-├── docs/
-│   ├── deploy-gcp.md         # GCP Cloud Run guide
-│   ├── deploy-aws.md         # AWS ECS/Fargate guide
-│   └── deploy-paas.md        # Railway/Fly.io/Render guide
-├── Dockerfile
-├── cloudbuild.yaml           # GCP Cloud Build config
 ├── .env.example
 └── package.json
 ```
@@ -376,15 +337,16 @@ const data = await res.json();
 - **Settlement key** — Store in a secrets manager (GCP Secret Manager, AWS Secrets Manager, etc.), never in env vars or code
 - **Settlement wallet** — Only holds gas tokens, never stablecoins. If compromised, attacker can only drain small gas balances
 - **Pay-to address** — This is YOUR wallet. Payments go directly from payer to you on-chain. The gateway never custodies funds
-- **Redis** — Used for nonce tracking. If Redis is down, the gateway fails open on reads (settlement still checks on-chain) and fails closed on writes (rejects payment to be safe)
+- **LMDB** — Used for nonce tracking. If store is unavailable, gateway fails open on reads (settlement still checks on-chain) and fails closed on writes (rejects payment to be safe)
 - **Backend API keys** — The gateway injects these server-side. Your backend never sees x402 traffic directly
 
 ## License
 
-MIT — fork it, ship it, make money with it.
+MIT
 
 ## Links
 
+- [x402 Gateway Template](https://github.com/azep-ninja/x402-gateway-template)
 - [x402 Protocol Spec](https://x402.org)
 - [x402 GitHub](https://github.com/coinbase/x402)
 - [@x402/fetch SDK](https://www.npmjs.com/package/@x402/fetch)
