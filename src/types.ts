@@ -1,5 +1,4 @@
 // Shared type definitions for x402 payment gateway
-import type { Request } from 'express';
 
 // ============================================================
 // Virtual Machine Types
@@ -185,8 +184,7 @@ export interface PaymentRequiredResponse {
 // ============================================================
 
 export interface ProxyOptions {
-  req: import('express').Request;
-  res: import('express').Response;
+  req: Request;
   targetBase: string;
   targetPath: string;
   apiKey?: string;
@@ -195,15 +193,15 @@ export interface ProxyOptions {
 }
 
 // ============================================================
-// Express Middleware Types
+// Payment Context (for middleware wrapper)
 // ============================================================
 
-export interface X402Request extends Request {
-  headers: import('http').IncomingHttpHeaders & {
-    'payment-signature'?: string;
-    'x-payment'?: string;
-    'x-x402-payer'?: string;
-  };
+export interface PaymentContext {
+  payer?: string;
+  txHash?: string;
+  network?: string;
+  blockNumber?: number | null;
+  facilitator?: string;
 }
 
 // ============================================================

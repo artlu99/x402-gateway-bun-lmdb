@@ -7,30 +7,22 @@
 // for backends that only accept POST.
 // ============================================================
 
-import type { Request, Response } from 'express';
 import type { ProxyOptions } from './types';
-
-interface ProxyParams {
-  req: Request;
-  res: Response;
-  targetBase: string;
-  targetPath: string;
-  apiKey?: string;
-  apiKeyHeader?: string;
-  forceMethod?: string;
-}
+import { CORS_HEADERS } from './utils/cors';
 
 export async function proxyToBackend({
   req,
-  res,
   targetBase,
   targetPath,
   apiKey,
   apiKeyHeader,
   forceMethod,
-}: ProxyParams): Promise<void> {
+}: ProxyOptions): Promise<Response> {
   // Build the full backend URL
   const url = new URL(targetPath, targetBase);
+
+  // Get URL info from native Request
+  const reqUrl = new URL(req.url);
 
   // Determine the method to send to the backend
   const backendMethod = forceMethod ?? req.method;
@@ -40,10 +32,24 @@ export async function proxyToBackend({
   //   - GET with query params + forceMethod POST → convert query to body
   let body: Record<string, unknown> | null = null;
 
-  if (['POST', 'PUT', 'PATCH'].includes(req.method) && req.body && Object.keys(req.body as object).length > 0) {
-    body = req.body as Record<string, unknown>;
-  } else if (req.query && Object.keys(req.query as object).length > 0) {
-    body = { ...req.query as Record<string, unknown> };
+  // Get query params
+  const queryParams = Object.fromEntries(reqUrl.searchParams);
+
+  // For methods with body, parse the request body
+  if (['POST', 'PUT', 'PATCH'].includes(req.method)) {
+    try {
+      const contentType = req.headers.get('content-type');
+      if (contentType?.includes('application/json')) {
+        body = await req.json() as Record<string, unknown>;
+      }
+    } catch {
+      // Invalid JSON, body stays null
+    }
+  }
+
+  // If no body and we have query params, use them as body
+  if (!body && Object.keys(queryParams).length > 0) {
+    body = { ...queryParams };
   }
 
   // Build headers
@@ -58,12 +64,18 @@ export async function proxyToBackend({
     headers[apiKeyHeader] = apiKey;
   }
 
-  // Forward context
-  if (req.ip) {
-    headers['X-Forwarded-For'] = req.ip;
+  // Forward context - get from native Request
+  const xForwardedFor = req.headers.get('x-forwarded-for');
+  if (xForwardedFor) {
+    headers['X-Forwarded-For'] = xForwardedFor;
   }
-  headers['X-Forwarded-Proto'] = req.protocol ?? 'https';
-  headers['X-x402-Payer'] = (req.headers?.['x-x402-payer'] as string | undefined) ?? 'unknown';
+
+  // Protocol from URL (remove trailing colon)
+  headers['X-Forwarded-Proto'] = reqUrl.protocol.replace(':', '');
+
+  // Forward x402 payer header
+  const x402Payer = req.headers.get('x-x402-payer');
+  headers['X-x402-Payer'] = x402Payer ?? 'unknown';
 
   // Build fetch options
   const fetchOptions: RequestInit = {
@@ -80,33 +92,47 @@ export async function proxyToBackend({
   // Call the backend
   const backendRes = await fetch(url.toString(), fetchOptions);
 
-  // Forward status
-  res.status(backendRes.status);
-
-  // Forward content-type
+  // Get content-type
   const contentType = backendRes.headers.get('content-type');
-  if (contentType) {
-    res.set('Content-Type', contentType);
-  }
 
-  // Read and return the response
+  // Read response text
   const responseText = await backendRes.text();
 
+  // Try to parse as JSON
   try {
     const json = JSON.parse(responseText) as unknown;
-    res.json(json);
+    // Return JSON response with CORS headers
+    return Response.json(json, {
+      status: backendRes.status,
+      headers: {
+        ...CORS_HEADERS,
+        ...(contentType && { 'Content-Type': contentType }),
+      },
+    });
   } catch {
     // If backend returned non-JSON (e.g. Cloudflare HTML error page),
     // wrap it in JSON for agent-friendly consumption on 5xx
     if (backendRes.status >= 500) {
-      res.set('Content-Type', 'application/json');
-      res.json({
-        error: 'Backend unavailable',
-        status: backendRes.status,
-        message: `Backend returned HTTP ${backendRes.status}. Please retry shortly.`,
-      });
+      return Response.json(
+        {
+          error: 'Backend unavailable',
+          status: backendRes.status,
+          message: `Backend returned HTTP ${backendRes.status}. Please retry shortly.`,
+        },
+        {
+          status: backendRes.status,
+          headers: CORS_HEADERS,
+        }
+      );
     } else {
-      res.send(responseText);
+      // Return text response for non-5xx
+      return new Response(responseText, {
+        status: backendRes.status,
+        headers: {
+          ...CORS_HEADERS,
+          ...(contentType && { 'Content-Type': contentType }),
+        },
+      });
     }
   }
 }

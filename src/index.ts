@@ -1,48 +1,45 @@
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
-import cors from 'cors';
-import type { Request, Response } from 'express';
-import express from 'express';
 import { ROUTE_CONFIG, SUPPORTED_NETWORKS } from './config/routes';
-import { x402PaymentMiddleware } from './middleware/x402';
+import { withPayment } from './middleware/x402';
 import { proxyToBackend } from './proxy';
+import { CORS_HEADERS, CORS_OPTIONS_RESPONSE, corsJson } from './utils/cors';
 import { pingRedis } from './utils/redis';
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-
-const app = express();
 const PORT = process.env.PORT ?? 8080;
 
-// Trust proxy headers (Cloudflare, Cloud Run, load balancers)
-app.set('trust proxy', true);
+// ============================================================
+// Helpers
+// ============================================================
 
-// Middleware
-app.use(cors());
-app.use(express.json());
+// Helper: Extract subpath from wildcard route
+function extractSubpath(url: string, prefix: string): string {
+  const parsedUrl = new URL(url);
+  const path = parsedUrl.pathname;
+  const after = path.slice(prefix.length);
+  return after.startsWith('/') ? after.slice(1) : after;
+}
 
-// Static assets (optional landing page)
-app.use(express.static('public'));
-
-// ─── Helpers ───────────────────────────────────────────────
-
-// Express 5 returns wildcard params as arrays
-function getSubpath(params: Record<string, unknown>): string {
-  const pathParam = params['path'];
-  return Array.isArray(pathParam) ? pathParam.join('/') : (pathParam as string) ?? '';
+// Helper: Get base URL for discovery endpoints
+function getBaseUrl(req: Request): string {
+  const url = new URL(req.url);
+  const host = req.headers.get('host') ?? 'localhost';
+  return `${url.protocol}//${host}`;
 }
 
 // ============================================================
-// Landing page
+// Pre-create static responses for zero-allocation dispatch
 // ============================================================
-app.get('/', (_req: Request, res: Response) => {
-  res.sendFile(path.join(__dirname, '../public/index.html'));
-});
+const STATIC_RESPONSES = {
+  index: new Response(Bun.file('./public/index.html')),
+  notFound: Response.json({ error: 'Not Found' }, { status: 404, headers: CORS_HEADERS }),
+  serverError: Response.json({ error: 'Internal Server Error' }, { status: 500, headers: CORS_HEADERS }),
+};
 
 // ============================================================
-// Health check (unprotected)
+// Route Handlers
 // ============================================================
-app.get('/health', async (_req: Request, res: Response) => {
+
+// Health check (unprotected)
+async function handleHealth(): Promise<Response> {
   const redisHealthy = await pingRedis();
 
   // Categorize networks
@@ -60,7 +57,7 @@ app.get('/health', async (_req: Request, res: Response) => {
     };
   }
 
-  res.json({
+  return corsJson({
     status: redisHealthy ? 'healthy' : 'degraded',
     service: 'x402-gateway',
     version: '1.0.0',
@@ -99,13 +96,11 @@ app.get('/health', async (_req: Request, res: Response) => {
       };
     }).filter((r): r is NonNullable<typeof r> => r !== null),
   });
-});
+}
 
-// ============================================================
 // x402 Discovery Document (/.well-known/x402)
-// ============================================================
-app.get('/.well-known/x402', (req: Request, res: Response) => {
-  const baseUrl = `${req.protocol}://${req.get('host')}`;
+function handleDiscovery(req: Request): Response {
+  const baseUrl = getBaseUrl(req);
   const resources = Object.values(ROUTE_CONFIG).map(route => `${baseUrl}${route.path}`);
 
   // Build chain list for instructions
@@ -130,7 +125,7 @@ app.get('/.well-known/x402', (req: Request, res: Response) => {
     '',
   ].join('\n')).join('\n');
 
-  res.json({
+  return corsJson({
     version: 1,
     resources,
     instructions: [
@@ -147,12 +142,10 @@ app.get('/.well-known/x402', (req: Request, res: Response) => {
       'Idempotency supported via `payment-identifier` extension — safe retries without double-charging.',
     ].join('\n'),
   });
-});
+}
 
-// ============================================================
 // Accepted payment routes (agent-friendly discovery)
-// ============================================================
-app.get('/accepted', (req: Request, res: Response) => {
+function handleAccepted(): Response {
   const basePriceDecimals = 6;
 
   const routes = Object.entries(ROUTE_CONFIG).map(([key, route]) => {
@@ -198,46 +191,31 @@ app.get('/accepted', (req: Request, res: Response) => {
     };
   });
 
-  res.json({
+  return corsJson({
     x402Version: 2,
     service: 'x402-gateway',
     routes,
   });
-});
+}
 
 // ============================================================
-// REGISTER YOUR ROUTES BELOW
+// Build paid route handler
 // ============================================================
-//
-// For each route in ROUTE_CONFIG, create:
-//   1. A paid route with x402PaymentMiddleware
-//   2. Optional free routes (health checks, job polling, etc.)
-//
-// The middleware handles:
-//   - Returning 402 with payment requirements if no payment header
-//   - Verifying the payment signature
-//   - Settling the payment on-chain
-//   - Calling next() so your handler runs
-//
-// Your handler then proxies the request to your backend.
-
-// ── Example: "myapi" route (PAID) ────────────────────────
-app.all('/v1/myapi/{*path}', x402PaymentMiddleware('myapi'), async (req: Request, res: Response) => {
-  try {
-    const subpath = getSubpath(req.params);
-    const route = ROUTE_CONFIG['myapi'];
+function createPaidRouteHandler(routeKey: string): (req: Request) => Promise<Response> {
+  return withPayment(routeKey, async (req: Request) => {
+    const route = ROUTE_CONFIG[routeKey];
     if (!route) {
-      res.status(500).json({ error: 'Route myapi not configured' });
-      return;
+      return corsJson({ error: `Route ${routeKey} not configured` }, 500);
     }
 
     if (!route.backendUrl) {
-      res.status(503).json({
+      return corsJson({
         error: 'Backend not configured',
-        message: 'MY_BACKEND_URL environment variable is not set',
-      });
-      return;
+        message: `${routeKey.toUpperCase()}_BACKEND_URL environment variable is not set`,
+      }, 503);
     }
+
+    const subpath = extractSubpath(req.url, `/v1/${routeKey}`);
 
     // Optional: Map friendly paths to backend paths
     const PATH_ALIASES: Record<string, string> = {
@@ -246,82 +224,97 @@ app.all('/v1/myapi/{*path}', x402PaymentMiddleware('myapi'), async (req: Request
     const resolvedSubpath = PATH_ALIASES[subpath] ?? subpath;
 
     const apiKey = process.env[route.backendApiKeyEnv];
-    await proxyToBackend({
+    return proxyToBackend({
       req,
-      res,
       targetBase: route.backendUrl,
       targetPath: '/api/' + resolvedSubpath,
       ...(apiKey && { apiKey }),
       apiKeyHeader: route.backendApiKeyHeader,
     });
-  } catch (err) {
-    const error = err as Error;
-    console.error('[myapi] Proxy error:', error.message);
-    res.status(502).json({ error: 'Backend unavailable' });
-  }
-});
+  });
+}
 
-// ── Example: Free health check for "myapi" ───────────────
-// app.get('/v1/myapi/health', async (req, res) => {
-//   try {
-//     const route = ROUTE_CONFIG.myapi;
-//     if (!route || !route.backendUrl) {
-//       return res.status(503).json({ error: 'Backend not configured' });
-//     }
-//     await proxyToBackend({
-//       req, res,
-//       targetBase: route.backendUrl,
-//       targetPath: '/api/health',
-//       apiKey: process.env[route.backendApiKeyEnv],
-//       apiKeyHeader: route.backendApiKeyHeader,
-//     });
-//   } catch (err) {
-//     res.status(502).json({ error: 'Backend unavailable' });
-//   }
-// });
+// ============================================================
+// Build routes object for Bun.serve
+// ============================================================
+function buildRoutes(): Record<string, (req: Request) => Response | Promise<Response>> {
+  const routes: Record<string, (req: Request) => Response | Promise<Response>> = {
+    // Static file (zero-copy via sendfile)
+    '/': () => STATIC_RESPONSES.index,
+
+    // Public endpoints
+    '/health': handleHealth,
+    '/.well-known/x402': handleDiscovery,
+    '/accepted': handleAccepted,
+  };
+
+  // Dynamic paid routes (wildcard)
+  for (const routeKey of Object.keys(ROUTE_CONFIG)) {
+    routes[`/v1/${routeKey}/*`] = createPaidRouteHandler(routeKey);
+  }
+
+  return routes;
+}
 
 // ============================================================
 // Start server
 // ============================================================
-app.listen(PORT, async () => {
-  console.log(`[x402-gateway] Listening on port ${PORT}`);
-  console.log(`[x402-gateway] Settlement: local (viem + @x402/svm)`);
+Bun.serve({
+  port: PORT,
+  routes: buildRoutes(),
+  async fetch(req) {
+    // Handle OPTIONS preflight - return pre-created response (zero allocation)
+    if (req.method === 'OPTIONS') return CORS_OPTIONS_RESPONSE;
 
-  // Check store connectivity (LMDB is always available if initialized)
-  const redisOk = await pingRedis();
-  console.log(`[x402-gateway] Store: ${redisOk ? '✓ ready (lmdb)' : '✗ error'}`);
+    // Fallback 404 - return pre-created response
+    return STATIC_RESPONSES.notFound;
+  },
+  error(error) {
+    console.error('[x402-gateway] Error:', error);
+    return STATIC_RESPONSES.serverError;
+  },
+});
 
-  // Log backend status
-  console.log(`[x402-gateway] Backends:`);
-  for (const [key, route] of Object.entries(ROUTE_CONFIG)) {
-    const configured = !!route.backendUrl;
-    console.log(`  ${key}: ${configured ? '✓ configured' : '✗ not set'}`);
+// ============================================================
+// Startup logging
+// ============================================================
+console.log(`[x402-gateway] Listening on port ${PORT}`);
+console.log(`[x402-gateway] Settlement: local (viem + @x402/svm)`);
+
+// Check store connectivity (LMDB is always available if initialized)
+const redisOk = await pingRedis();
+console.log(`[x402-gateway] Store: ${redisOk ? '✓ ready (lmdb)' : '✗ error'}`);
+
+// Log backend status
+console.log(`[x402-gateway] Backends:`);
+for (const [key, route] of Object.entries(ROUTE_CONFIG)) {
+  const configured = !!route.backendUrl;
+  console.log(`  ${key}: ${configured ? '✓ configured' : '✗ not set'}`);
+}
+
+// Log active networks
+const networkKeys = Object.keys(SUPPORTED_NETWORKS);
+const evmCount = networkKeys.filter(k => SUPPORTED_NETWORKS[k]?.vm === 'evm').length;
+const svmCount = networkKeys.filter(k => SUPPORTED_NETWORKS[k]?.vm === 'svm').length;
+console.log(`[x402-gateway] Active networks (${networkKeys.length}): ${evmCount} EVM, ${svmCount} SVM`);
+
+networkKeys.forEach(caip2 => {
+  const net = SUPPORTED_NETWORKS[caip2];
+  if (!net) return;
+  let mode: string;
+  if (net.vm === 'svm') {
+    mode = 'local settlement (@x402/svm)';
+  } else if (net.facilitator) {
+    mode = `facilitator (${net.facilitator.url})`;
+  } else {
+    mode = 'local settlement (viem)';
   }
+  const chainLabel = net.chainId !== undefined ? `chain ${net.chainId}` : net.vm.toUpperCase();
+  console.log(`  ${caip2} (${chainLabel}) — ${mode}`);
+});
 
-  // Log active networks
-  const networkKeys = Object.keys(SUPPORTED_NETWORKS);
-  const evmCount = networkKeys.filter(k => SUPPORTED_NETWORKS[k]?.vm === 'evm').length;
-  const svmCount = networkKeys.filter(k => SUPPORTED_NETWORKS[k]?.vm === 'svm').length;
-  console.log(`[x402-gateway] Active networks (${networkKeys.length}): ${evmCount} EVM, ${svmCount} SVM`);
-
-  networkKeys.forEach(caip2 => {
-    const net = SUPPORTED_NETWORKS[caip2];
-    if (!net) return;
-    let mode: string;
-    if (net.vm === 'svm') {
-      mode = 'local settlement (@x402/svm)';
-    } else if (net.facilitator) {
-      mode = `facilitator (${net.facilitator.url})`;
-    } else {
-      mode = 'local settlement (viem)';
-    }
-    const chainLabel = net.chainId !== undefined ? `chain ${net.chainId}` : net.vm.toUpperCase();
-    console.log(`  ${caip2} (${chainLabel}) — ${mode}`);
-  });
-
-  // Log routes
-  console.log(`[x402-gateway] Routes:`);
-  Object.entries(ROUTE_CONFIG).forEach(([key, route]) => {
-    console.log(`  /v1/${key}/* -> ${route.backendName} (${route.price})`);
-  });
+// Log routes
+console.log(`[x402-gateway] Routes:`);
+Object.entries(ROUTE_CONFIG).forEach(([key, route]) => {
+  console.log(`  /v1/${key}/* -> ${route.backendName} (${route.price})`);
 });

@@ -3,7 +3,6 @@ import { base58 } from '@scure/base';
 import { createKeyPairSignerFromBytes } from '@solana/kit';
 import { type FacilitatorRpcConfig, toFacilitatorSvmSigner } from '@x402/svm';
 import { ExactSvmScheme } from '@x402/svm/exact/facilitator';
-import type { NextFunction, Request, RequestHandler, Response } from 'express';
 import invariant from 'tiny-invariant';
 import {
   type Chain,
@@ -31,12 +30,14 @@ import {
 import { ROUTE_CONFIG, SUPPORTED_NETWORKS } from '../config/routes';
 import type {
   NetworkConfig,
+  PaymentContext,
   PaymentPayload,
   PaymentResponseData,
   RouteConfig,
   SettlementResult,
   VerificationResult
 } from '../types';
+import { CORS_HEADERS, CORS_OPTIONS_RESPONSE, corsJsonWithHeaders } from '../utils/cors';
 import {
   deleteNonce,
   getIdempotencyCache,
@@ -239,6 +240,18 @@ function extractPaymentIdentifier(paymentPayload: PaymentPayload): string | null
   } catch {
     return null;
   }
+}
+
+// ============================================================
+// Helper: Get request URL info from native Request
+// ============================================================
+function getRequestUrl(req: Request): { protocol: string; host: string; resource: string } {
+  const url = new URL(req.url);
+  const host = req.headers.get('host') ?? 'localhost';
+  // url.protocol includes the colon, but we need it for constructing URLs
+  const protocol = url.protocol.replace(':', '');
+  const resource = `${protocol}://${host}${url.pathname}${url.search}`;
+  return { protocol, host, resource };
 }
 
 // ============================================================
@@ -667,7 +680,7 @@ async function buildPaymentRequired(
   req: Request,
   _routeKey: string
 ): Promise<PaymentRequiredResult> {
-  const resource = `${req.protocol}://${req.get('host')}${req.originalUrl}`;
+  const { resource } = getRequestUrl(req);
   const basePriceAtomic = BigInt(routeConfig.priceAtomic);
 
   // Get SVM fee payer if any SVM networks are active
@@ -750,170 +763,252 @@ async function buildPaymentRequired(
 }
 
 // ============================================================
-// Express middleware factory
+// Payment verification result (internal)
 // ============================================================
-export function x402PaymentMiddleware(routeKey: string): RequestHandler {
-  return async (req: Request, res: Response, next: NextFunction): Promise<void> => {
-    const routeConfig = ROUTE_CONFIG[routeKey];
-    if (!routeConfig) {
-      res.status(500).json({ error: `Unknown route: ${routeKey}` });
-      return;
-    }
+interface VerifyAndSettleResult {
+  error?: Response;
+  context?: PaymentContext;
+  paymentResponseHeader?: string;
+}
 
-    // Check for payment header
-    const paymentHeader = req.headers['payment-signature'] ?? req.headers['x-payment'];
-
-    if (!paymentHeader) {
-      const { headerBase64, body } = await buildPaymentRequired(routeConfig, req, routeKey);
-      res.set('PAYMENT-REQUIRED', headerBase64);
-      res.status(402).json({
-        ...body,
-        error: 'Payment required',
-        message: `This endpoint requires ${routeConfig.price} USDC. See accepts array for supported networks.`,
-      });
-      return;
-    }
-
-    // Decode payment payload
-    let paymentPayload: PaymentPayload;
-    try {
-      const headerStr = Array.isArray(paymentHeader) ? (paymentHeader[0] ?? '') : paymentHeader;
-      paymentPayload = JSON.parse(Buffer.from(headerStr, 'base64').toString()) as PaymentPayload;
-    } catch {
-      res.status(400).json({ error: 'Invalid payment payload encoding' });
-      return;
-    }
-
-    // Idempotency check
-    const paymentId = extractPaymentIdentifier(paymentPayload);
-    if (paymentId) {
-      const cached = await getIdempotencyCache(paymentId);
-      if (cached) {
-        console.log(`[x402] Idempotency hit: ${paymentId.slice(0, 16)}...`);
-        if (cached.response?.paymentResponseHeader) {
-          res.set('PAYMENT-RESPONSE', cached.response.paymentResponseHeader);
-        }
-        next();
-        return;
-      }
-    }
-
-    // Resolve network
-    const network = SUPPORTED_NETWORKS[paymentPayload.network];
-    if (!network) {
-      res.status(402).json({
-        error: 'Unsupported network',
-        reason: `Network ${paymentPayload.network} is not supported`,
-      });
-      return;
-    }
-
-    // Determine payment path
-    const useSvm = isSvmNetwork(network);
-    const useEvmFacilitator = !useSvm && !!network.facilitator;
-
-    const enrichedRouteConfig: RouteConfig = {
-      ...routeConfig,
-      resource: `${req.protocol}://${req.get('host')}${req.originalUrl}`,
+// ============================================================
+// Verify and settle payment (core logic, returns result)
+// ============================================================
+async function verifyAndSettlePayment(
+  req: Request,
+  routeKey: string
+): Promise<VerifyAndSettleResult> {
+  const routeConfig = ROUTE_CONFIG[routeKey];
+  if (!routeConfig) {
+    return {
+      error: corsJsonWithHeaders({ error: `Unknown route: ${routeKey}` }, 500),
     };
+  }
 
-    // Verify payment
-    let verification: VerificationResult;
+  // Check for payment header
+  const paymentHeader = req.headers.get('payment-signature') ?? req.headers.get('x-payment');
+
+  if (!paymentHeader) {
+    const { headerBase64, body } = await buildPaymentRequired(routeConfig, req, routeKey);
+    return {
+      error: corsJsonWithHeaders(
+        {
+          ...body,
+          error: 'Payment required',
+          message: `This endpoint requires ${routeConfig.price} USDC. See accepts array for supported networks.`,
+        },
+        402,
+        { 'PAYMENT-REQUIRED': headerBase64 }
+      ),
+    };
+  }
+
+  // Decode payment payload
+  let paymentPayload: PaymentPayload;
+  try {
+    paymentPayload = JSON.parse(Buffer.from(paymentHeader, 'base64').toString()) as PaymentPayload;
+  } catch {
+    return {
+      error: corsJsonWithHeaders({ error: 'Invalid payment payload encoding' }, 400),
+    };
+  }
+
+  // Idempotency check
+  const paymentId = extractPaymentIdentifier(paymentPayload);
+  if (paymentId) {
+    const cached = await getIdempotencyCache(paymentId);
+    if (cached) {
+      console.log(`[x402] Idempotency hit: ${paymentId.slice(0, 16)}...`);
+      return {
+        context: {},
+        ...(cached.response?.paymentResponseHeader && { paymentResponseHeader: cached.response.paymentResponseHeader }),
+      };
+    }
+  }
+
+  // Resolve network
+  const network = SUPPORTED_NETWORKS[paymentPayload.network];
+  if (!network) {
+    return {
+      error: corsJsonWithHeaders(
+        {
+          error: 'Unsupported network',
+          reason: `Network ${paymentPayload.network} is not supported`,
+        },
+        402
+      ),
+    };
+  }
+
+  // Determine payment path
+  const useSvm = isSvmNetwork(network);
+  const useEvmFacilitator = !useSvm && !!network.facilitator;
+
+  const { resource } = getRequestUrl(req);
+  const enrichedRouteConfig: RouteConfig = {
+    ...routeConfig,
+    resource,
+  };
+
+  // Verify payment
+  let verification: VerificationResult;
+  if (useSvm) {
+    verification = await verifyPaymentSvm(paymentPayload, enrichedRouteConfig, network);
+  } else if (useEvmFacilitator) {
+    verification = await verifyPaymentViaFacilitator(paymentPayload, enrichedRouteConfig, network);
+  } else {
+    verification = await verifyPaymentEvm(paymentPayload, routeConfig);
+  }
+
+  if (!verification.valid) {
+    const pathLabel = useSvm ? 'SVM' : useEvmFacilitator ? 'facilitator' : 'EVM';
+    console.warn(`[x402] Verification failed (${pathLabel}): ${verification.reason}`);
+    const { headerBase64, body } = await buildPaymentRequired(routeConfig, req, routeKey);
+    return {
+      error: corsJsonWithHeaders(
+        {
+          ...body,
+          error: 'Payment verification failed',
+          reason: verification.reason,
+        },
+        402,
+        { 'PAYMENT-REQUIRED': headerBase64 }
+      ),
+    };
+  }
+
+  // Mark nonce as pending
+  let nonceKey: string | null = null;
+  if (useSvm) {
+    const txData = paymentPayload.payload?.transaction;
+    if (txData) {
+      nonceKey = `svm:${crypto.createHash('sha256').update(txData).digest('hex')}`;
+    }
+  } else if (!useEvmFacilitator) {
+    nonceKey = paymentPayload.payload?.authorization?.nonce ?? null;
+  }
+
+  const payer = verification.payer ?? paymentPayload.payload?.authorization?.from ?? 'unknown';
+
+  if (nonceKey) {
+    const acquired = await setNoncePending(nonceKey, {
+      network: paymentPayload.network,
+      payer,
+      route: routeKey,
+      vm: useSvm ? 'svm' : 'evm',
+    });
+    if (!acquired) {
+      return {
+        error: corsJsonWithHeaders(
+          {
+            error: 'Payment verification failed',
+            reason: 'Nonce already used or settlement in progress',
+          },
+          402
+        ),
+      };
+    }
+  }
+
+  // Settle payment
+  try {
+    let settlement: SettlementResult;
     if (useSvm) {
-      verification = await verifyPaymentSvm(paymentPayload, enrichedRouteConfig, network);
+      settlement = await settlePaymentSvm(paymentPayload, enrichedRouteConfig, network);
     } else if (useEvmFacilitator) {
-      verification = await verifyPaymentViaFacilitator(paymentPayload, enrichedRouteConfig, network);
+      settlement = await settlePaymentViaFacilitator(paymentPayload, enrichedRouteConfig, network);
     } else {
-      verification = await verifyPaymentEvm(paymentPayload, routeConfig);
+      settlement = await settlePaymentEvm(paymentPayload);
     }
 
-    if (!verification.valid) {
-      const pathLabel = useSvm ? 'SVM' : useEvmFacilitator ? 'facilitator' : 'EVM';
-      console.warn(`[x402] Verification failed (${pathLabel}): ${verification.reason}`);
-      const { headerBase64, body } = await buildPaymentRequired(routeConfig, req, routeKey);
-      res.set('PAYMENT-REQUIRED', headerBase64);
-      res.status(402).json({
-        ...body,
-        error: 'Payment verification failed',
-        reason: verification.reason,
-      });
-      return;
-    }
-
-    // Mark nonce as pending
-    let nonceKey: string | null = null;
-    if (useSvm) {
-      const txData = paymentPayload.payload?.transaction;
-      if (txData) {
-        nonceKey = `svm:${crypto.createHash('sha256').update(txData).digest('hex')}`;
-      }
-    } else if (!useEvmFacilitator) {
-      nonceKey = paymentPayload.payload?.authorization?.nonce ?? null;
-    }
-
-    const payer = verification.payer ?? paymentPayload.payload?.authorization?.from ?? 'unknown';
-
+    // Confirm nonce
     if (nonceKey) {
-      const acquired = await setNoncePending(nonceKey, {
-        network: paymentPayload.network,
-        payer,
+      await setNonceConfirmed(nonceKey, {
+        txHash: settlement.txHash,
+        network: settlement.network,
+        blockNumber: settlement.blockNumber ?? undefined,
+        payer: settlement.payer ?? payer,
         route: routeKey,
         vm: useSvm ? 'svm' : 'evm',
       });
-      if (!acquired) {
-        res.status(402).json({
-          error: 'Payment verification failed',
-          reason: 'Nonce already used or settlement in progress',
-        });
-        return;
-      }
     }
 
-    // Settle payment
-    try {
-      let settlement: SettlementResult;
-      if (useSvm) {
-        settlement = await settlePaymentSvm(paymentPayload, enrichedRouteConfig, network);
-      } else if (useEvmFacilitator) {
-        settlement = await settlePaymentViaFacilitator(paymentPayload, enrichedRouteConfig, network);
-      } else {
-        settlement = await settlePaymentEvm(paymentPayload);
-      }
+    const paymentResponseData: PaymentResponseData = {
+      success: true,
+      txHash: settlement.txHash,
+      network: settlement.network,
+      blockNumber: settlement.blockNumber,
+      ...(settlement.facilitator && { facilitator: settlement.facilitator }),
+    };
 
-      // Confirm nonce
-      if (nonceKey) {
-        await setNonceConfirmed(nonceKey, {
-          txHash: settlement.txHash,
-          network: settlement.network,
-          blockNumber: settlement.blockNumber ?? undefined,
-          payer: settlement.payer ?? payer,
-          route: routeKey,
-          vm: useSvm ? 'svm' : 'evm',
-        });
-      }
+    const paymentResponseHeader = Buffer.from(JSON.stringify(paymentResponseData)).toString('base64');
 
-      const paymentResponseData: PaymentResponseData = {
-        success: true,
+    // Cache for idempotency
+    if (paymentId) {
+      await setIdempotencyCache(paymentId, { paymentResponseHeader, settlement: paymentResponseData });
+    }
+
+    return {
+      context: {
+        payer: settlement.payer ?? payer,
         txHash: settlement.txHash,
         network: settlement.network,
         blockNumber: settlement.blockNumber,
         ...(settlement.facilitator && { facilitator: settlement.facilitator }),
-      };
+      },
+      paymentResponseHeader,
+    };
+  } catch (err) {
+    if (nonceKey) await deleteNonce(nonceKey);
+    const error = err as Error;
+    console.error(`[x402] Settlement failed:`, error.message);
+    return {
+      error: corsJsonWithHeaders({ error: 'Payment settlement failed', reason: error.message }, 402),
+    };
+  }
+}
 
-      const paymentResponseHeader = Buffer.from(JSON.stringify(paymentResponseData)).toString('base64');
-      res.set('PAYMENT-RESPONSE', paymentResponseHeader);
-
-      // Cache for idempotency
-      if (paymentId) {
-        await setIdempotencyCache(paymentId, { paymentResponseHeader, settlement: paymentResponseData });
-      }
-
-      next();
-    } catch (err) {
-      if (nonceKey) await deleteNonce(nonceKey);
-      const error = err as Error;
-      console.error(`[x402] Settlement failed:`, error.message);
-      res.status(402).json({ error: 'Payment settlement failed', reason: error.message });
+// ============================================================
+// Handler wrapper for Bun.serve routes
+// ============================================================
+export function withPayment(
+  routeKey: string,
+  handler: (req: Request, ctx: PaymentContext) => Promise<Response>
+): (req: Request) => Promise<Response> {
+  return async (req: Request): Promise<Response> => {
+    // Handle OPTIONS preflight requests directly
+    if (req.method === 'OPTIONS') {
+      return CORS_OPTIONS_RESPONSE;
     }
+
+    const result = await verifyAndSettlePayment(req, routeKey);
+
+    if (result.error) {
+      return result.error;
+    }
+
+    // Add payment response header to the handler's response
+    const response = await handler(req, result.context ?? {});
+
+    if (result.paymentResponseHeader) {
+      const headers = new Headers(response.headers);
+      headers.set('PAYMENT-RESPONSE', result.paymentResponseHeader);
+      // Ensure CORS headers are present
+      for (const [key, value] of Object.entries(CORS_HEADERS)) {
+        if (!headers.has(key)) {
+          headers.set(key, value);
+        }
+      }
+      return new Response(response.body, {
+        status: response.status,
+        statusText: response.statusText,
+        headers,
+      });
+    }
+
+    return response;
   };
 }
+
+// Re-export for backward compatibility (deprecated - use withPayment instead)
+export { withPayment as x402PaymentMiddleware };

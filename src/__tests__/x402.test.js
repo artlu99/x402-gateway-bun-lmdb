@@ -20,42 +20,34 @@ mock.module('../utils/redis', () => ({
 }));
 
 // Import real x402 middleware and route config
-const { x402PaymentMiddleware } = await import('../middleware/x402');
+const { withPayment } = await import('../middleware/x402');
 const { ROUTE_CONFIG } = await import('../config/routes');
 
-// Helper to create mock Express req/res/next
-function createMockReq(overrides = {}) {
-  return {
-    headers: {},
-    protocol: 'https',
-    get: mock((name) => (name === 'host' ? 'api.example.com' : '')),
-    originalUrl: '/v1/myapi/endpoint',
-    ...overrides,
-  };
+// Helper to create native Request mock
+function createMockRequest(overrides = {}) {
+  const {
+    method = 'POST',
+    url = 'https://api.example.com/v1/myapi/endpoint',
+    headers = {},
+  } = overrides;
+
+  return new Request(url, {
+    method,
+    headers: {
+      'Content-Type': 'application/json',
+      ...headers,
+    },
+  });
 }
 
-function createMockRes() {
-  const res = {
-    _status: null,
-    _json: null,
-    _headers: {},
-    status(code) {
-      res._status = code;
-      return res;
-    },
-    json(body) {
-      res._json = body;
-      return res;
-    },
-    set(name, value) {
-      res._headers[name] = value;
-      return res;
-    },
-  };
-  return res;
+// Helper to wrap withPayment and call it
+async function callWithPayment(routeKey, req, handler = null) {
+  const defaultHandler = handler ?? (async () => new Response('OK', { status: 200 }));
+  const wrappedHandler = withPayment(routeKey, defaultHandler);
+  return wrappedHandler(req);
 }
 
-describe('x402 Middleware (real module)', () => {
+describe('x402 Middleware (withPayment wrapper)', () => {
   beforeEach(() => {
     mockGetNonce.mockClear();
     mockSetNoncePending.mockClear();
@@ -70,54 +62,49 @@ describe('x402 Middleware (real module)', () => {
 
   describe('No payment header', () => {
     test('should return 402 with PAYMENT-REQUIRED header and accepts array', async () => {
-      const middleware = x402PaymentMiddleware('myapi');
-      const req = createMockReq();
-      const res = createMockRes();
-      const next = mock(() => {});
+      const req = createMockRequest();
+      const response = await callWithPayment('myapi', req);
 
-      await middleware(req, res, next);
+      expect(response.status).toBe(402);
+      expect(response.headers.get('PAYMENT-REQUIRED')).not.toBeNull();
 
-      expect(res._status).toBe(402);
-      expect(res._headers['PAYMENT-REQUIRED']).toBeDefined();
-      expect(res._json).toBeDefined();
-      expect(res._json.accepts).toBeDefined();
-      expect(Array.isArray(res._json.accepts)).toBe(true);
-      expect(res._json.extensions['payment-identifier']).toEqual({ supported: true, required: false });
-      expect(next).not.toHaveBeenCalled();
+      const body = await response.json();
+      expect(body.accepts).toBeDefined();
+      expect(Array.isArray(body.accepts)).toBe(true);
+      expect(body.extensions['payment-identifier']).toEqual({ supported: true, required: false });
     });
 
     test('should include resource URL in response', async () => {
-      const middleware = x402PaymentMiddleware('myapi');
-      const req = createMockReq({ originalUrl: '/v1/myapi/custom/path' });
-      const res = createMockRes();
+      const req = createMockRequest({
+        url: 'https://api.example.com/v1/myapi/custom/path',
+      });
+      const response = await callWithPayment('myapi', req);
 
-      await middleware(req, res, mock(() => {}));
-
-      expect(res._json.resource?.url).toContain('/v1/myapi/custom/path');
+      const body = await response.json();
+      expect(body.resource?.url).toContain('/v1/myapi/custom/path');
     });
   });
 
   describe('Invalid payment header', () => {
     test('should return 400 for invalid base64', async () => {
-      const middleware = x402PaymentMiddleware('myapi');
-      const req = createMockReq({ headers: { 'x-payment': 'invalid!!!' } });
-      const res = createMockRes();
+      const req = createMockRequest({
+        headers: { 'x-payment': 'invalid!!!' },
+      });
+      const response = await callWithPayment('myapi', req);
 
-      await middleware(req, res, mock(() => {}));
-
-      expect(res._status).toBe(400);
-      expect(res._json.error).toBe('Invalid payment payload encoding');
+      expect(response.status).toBe(400);
+      const body = await response.json();
+      expect(body.error).toBe('Invalid payment payload encoding');
     });
 
     test('should return 400 for invalid JSON in base64', async () => {
-      const middleware = x402PaymentMiddleware('myapi');
       const header = Buffer.from('not json').toString('base64');
-      const req = createMockReq({ headers: { 'payment-signature': header } });
-      const res = createMockRes();
+      const req = createMockRequest({
+        headers: { 'payment-signature': header },
+      });
+      const response = await callWithPayment('myapi', req);
 
-      await middleware(req, res, mock(() => {}));
-
-      expect(res._status).toBe(400);
+      expect(response.status).toBe(400);
     });
   });
 
@@ -130,33 +117,31 @@ describe('x402 Middleware (real module)', () => {
         payload: { authorization: {}, signature: '0x' },
       };
       const header = Buffer.from(JSON.stringify(payload)).toString('base64');
-      const middleware = x402PaymentMiddleware('myapi');
-      const req = createMockReq({ headers: { 'x-payment': header } });
-      const res = createMockRes();
+      const req = createMockRequest({
+        headers: { 'x-payment': header },
+      });
+      const response = await callWithPayment('myapi', req);
 
-      await middleware(req, res, mock(() => {}));
-
-      expect(res._status).toBe(402);
-      expect(res._json.error).toBe('Unsupported network');
-      expect(res._json.reason).toContain('eip155:99999');
+      expect(response.status).toBe(402);
+      const body = await response.json();
+      expect(body.error).toBe('Unsupported network');
+      expect(body.reason).toContain('eip155:99999');
     });
   });
 
   describe('Unknown route', () => {
     test('should return 500 for unknown route key', async () => {
-      const middleware = x402PaymentMiddleware('nonexistent');
-      const req = createMockReq();
-      const res = createMockRes();
+      const req = createMockRequest();
+      const response = await callWithPayment('nonexistent', req);
 
-      await middleware(req, res, mock(() => {}));
-
-      expect(res._status).toBe(500);
-      expect(res._json.error).toBe('Unknown route: nonexistent');
+      expect(response.status).toBe(500);
+      const body = await response.json();
+      expect(body.error).toBe('Unknown route: nonexistent');
     });
   });
 
   describe('Idempotency cache', () => {
-    test('should call next() when payment has cached idempotency response', async () => {
+    test('should call handler when payment has cached idempotency response', async () => {
       const payload = {
         x402Version: 2,
         scheme: 'exact',
@@ -169,17 +154,20 @@ describe('x402 Middleware (real module)', () => {
         response: { paymentResponseHeader: 'cached-header-base64' },
       });
 
-      const middleware = x402PaymentMiddleware('myapi');
-      const req = createMockReq({ headers: { 'x-payment': header } });
-      const res = createMockRes();
-      const next = mock(() => {});
+      const req = createMockRequest({
+        headers: { 'x-payment': header },
+      });
 
-      await middleware(req, res, next);
+      let handlerCalled = false;
+      const response = await callWithPayment('myapi', req, async () => {
+        handlerCalled = true;
+        return new Response('OK', { status: 200 });
+      });
 
       expect(mockGetIdempotencyCache).toHaveBeenCalledWith('test-payment-id-12345678');
-      expect(res._headers['PAYMENT-RESPONSE']).toBe('cached-header-base64');
-      expect(next).toHaveBeenCalled();
-      expect(res._status).toBeNull();
+      expect(response.headers.get('PAYMENT-RESPONSE')).toBe('cached-header-base64');
+      expect(handlerCalled).toBe(true);
+      expect(response.status).toBe(200);
     });
   });
 
@@ -208,15 +196,15 @@ describe('x402 Middleware (real module)', () => {
       const header = Buffer.from(JSON.stringify(payload)).toString('base64');
       mockGetNonce.mockResolvedValueOnce({ status: 'pending' });
 
-      const middleware = x402PaymentMiddleware('myapi');
-      const req = createMockReq({ headers: { 'x-payment': header } });
-      const res = createMockRes();
+      const req = createMockRequest({
+        headers: { 'x-payment': header },
+      });
+      const response = await callWithPayment('myapi', req);
 
-      await middleware(req, res, mock(() => {}));
-
-      expect(res._status).toBe(402);
-      expect(res._json.error).toBe('Payment verification failed');
-      expect(res._json.reason).toContain('Nonce already used');
+      expect(response.status).toBe(402);
+      const body = await response.json();
+      expect(body.error).toBe('Payment verification failed');
+      expect(body.reason).toContain('Nonce already used');
     });
   });
 
@@ -230,14 +218,14 @@ describe('x402 Middleware (real module)', () => {
       };
       const header = Buffer.from(JSON.stringify(payload)).toString('base64');
 
-      const middleware = x402PaymentMiddleware('myapi');
-      const req = createMockReq({ headers: { 'x-payment': header } });
-      const res = createMockRes();
+      const req = createMockRequest({
+        headers: { 'x-payment': header },
+      });
+      const response = await callWithPayment('myapi', req);
 
-      await middleware(req, res, mock(() => {}));
-
-      expect(res._status).toBe(402);
-      expect(res._json.reason).toContain('Unsupported scheme');
+      expect(response.status).toBe(402);
+      const body = await response.json();
+      expect(body.reason).toContain('Unsupported scheme');
     });
   });
 
@@ -268,15 +256,14 @@ describe('x402 Middleware (real module)', () => {
       mockGetIdempotencyCache.mockResolvedValue(null);
       mockGetNonce.mockResolvedValue(null);
 
-      const middleware = x402PaymentMiddleware('myapi');
-      const req = createMockReq({ headers: { 'x-payment': header } });
-      const res = createMockRes();
-
-      await middleware(req, res, mock(() => {}));
+      const req = createMockRequest({
+        headers: { 'x-payment': header },
+      });
+      const response = await callWithPayment('myapi', req);
 
       expect(mockGetIdempotencyCache).toHaveBeenCalledWith('test_id-12345678');
       // Verification proceeds and fails at signature check, but we've exercised extractPaymentIdentifier
-      expect(res._status).toBe(402);
+      expect(response.status).toBe(402);
     });
   });
 
@@ -290,14 +277,24 @@ describe('x402 Middleware (real module)', () => {
       };
       const header = Buffer.from(JSON.stringify(payload)).toString('base64');
 
-      const middleware = x402PaymentMiddleware('myapi');
-      const req = createMockReq({ headers: { 'payment-signature': header } });
-      const res = createMockRes();
+      const req = createMockRequest({
+        headers: { 'payment-signature': header },
+      });
+      const response = await callWithPayment('myapi', req);
 
-      await middleware(req, res, mock(() => {}));
+      expect(response.status).toBe(402);
+      const body = await response.json();
+      expect(body.error).toBe('Unsupported network');
+    });
+  });
 
-      expect(res._status).toBe(402);
-      expect(res._json.error).toBe('Unsupported network');
+  describe('CORS headers', () => {
+    test('should include CORS headers in 402 response', async () => {
+      const req = createMockRequest();
+      const response = await callWithPayment('myapi', req);
+
+      expect(response.headers.get('Access-Control-Allow-Origin')).toBe('*');
+      expect(response.headers.get('Access-Control-Allow-Methods')).toBeDefined();
     });
   });
 });

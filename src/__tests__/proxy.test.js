@@ -17,39 +17,42 @@ global.fetch = mockFetch;
 // Import after mocking
 const { proxyToBackend } = await import('../proxy');
 
-describe('proxyToBackend', () => {
-  let mockReq;
-  let mockRes;
+// Helper to create native Request mock
+function createMockRequest(options = {}) {
+  const {
+    method = 'POST',
+    url = 'https://gateway.example.com/api/endpoint',
+    body = null,
+    headers = {},
+  } = options;
 
+  const req = new Request(url, {
+    method,
+    headers: {
+      'Content-Type': 'application/json',
+      ...headers,
+    },
+    ...(body && { body: JSON.stringify(body) }),
+  });
+
+  return req;
+}
+
+describe('proxyToBackend', () => {
   beforeEach(() => {
     mockFetch.mockClear();
-
-    mockReq = {
-      method: 'POST',
-      headers: {},
-      protocol: 'https',
-      ip: '192.168.1.1',
-      body: { query: 'test', param: 'value' },
-      query: {},
-      get: mock((key) => {
-        if (key === 'host') return 'gateway.example.com';
-        return null;
-      }),
-    };
-
-    mockRes = {
-      status: mock(() => mockRes),
-      json: mock(() => mockRes),
-      set: mock(() => mockRes),
-      send: mock(() => mockRes),
-    };
   });
 
   describe('basic proxying', () => {
     test('should proxy POST request with body', async () => {
-      await proxyToBackend({
+      const mockReq = createMockRequest({
+        method: 'POST',
+        url: 'https://gateway.example.com/api/endpoint',
+        body: { query: 'test', param: 'value' },
+      });
+
+      const response = await proxyToBackend({
         req: mockReq,
-        res: mockRes,
         targetBase: 'https://api.example.com',
         targetPath: '/api/endpoint',
         apiKey: 'test-api-key',
@@ -57,22 +60,24 @@ describe('proxyToBackend', () => {
       });
 
       expect(mockFetch).toHaveBeenCalled();
-      const [url, options] = mockFetch.mock.calls[0];
+      const [fetchUrl, options] = mockFetch.mock.calls[0];
 
-      expect(url).toBe('https://api.example.com/api/endpoint');
+      expect(fetchUrl).toBe('https://api.example.com/api/endpoint');
       expect(options.method).toBe('POST');
       expect(options.headers['x-api-key']).toBe('test-api-key');
       expect(options.headers['Content-Type']).toBe('application/json');
       expect(options.body).toBe(JSON.stringify({ query: 'test', param: 'value' }));
+      expect(response.status).toBe(200);
     });
 
     test('should proxy GET request', async () => {
-      mockReq.method = 'GET';
-      mockReq.body = null;
+      const mockReq = createMockRequest({
+        method: 'GET',
+        url: 'https://gateway.example.com/api/endpoint',
+      });
 
-      await proxyToBackend({
+      const response = await proxyToBackend({
         req: mockReq,
-        res: mockRes,
         targetBase: 'https://api.example.com',
         targetPath: '/api/endpoint',
       });
@@ -80,16 +85,17 @@ describe('proxyToBackend', () => {
       const [, options] = mockFetch.mock.calls[0];
       expect(options.method).toBe('GET');
       expect(options.body).toBeUndefined();
+      expect(response.status).toBe(200);
     });
 
     test('should convert GET query params to body with forceMethod POST', async () => {
-      mockReq.method = 'GET';
-      mockReq.body = null;
-      mockReq.query = { search: 'term', limit: '10' };
+      const mockReq = createMockRequest({
+        method: 'GET',
+        url: 'https://gateway.example.com/api/search?search=term&limit=10',
+      });
 
-      await proxyToBackend({
+      const response = await proxyToBackend({
         req: mockReq,
-        res: mockRes,
         targetBase: 'https://api.example.com',
         targetPath: '/api/search',
         forceMethod: 'POST',
@@ -98,15 +104,18 @@ describe('proxyToBackend', () => {
       const [, options] = mockFetch.mock.calls[0];
       expect(options.method).toBe('POST');
       expect(options.body).toBe(JSON.stringify({ search: 'term', limit: '10' }));
+      expect(response.status).toBe(200);
     });
 
     test('should use PUT method when specified', async () => {
-      mockReq.method = 'PUT';
-      mockReq.body = { id: 1, value: 'updated' };
+      const mockReq = createMockRequest({
+        method: 'PUT',
+        url: 'https://gateway.example.com/api/resource',
+        body: { id: 1, value: 'updated' },
+      });
 
-      await proxyToBackend({
+      const response = await proxyToBackend({
         req: mockReq,
-        res: mockRes,
         targetBase: 'https://api.example.com',
         targetPath: '/api/resource',
       });
@@ -114,29 +123,36 @@ describe('proxyToBackend', () => {
       const [, options] = mockFetch.mock.calls[0];
       expect(options.method).toBe('PUT');
       expect(options.body).toBe(JSON.stringify({ id: 1, value: 'updated' }));
+      expect(response.status).toBe(200);
     });
 
     test('should use PATCH method when specified', async () => {
-      mockReq.method = 'PATCH';
-      mockReq.body = { value: 'patched' };
+      const mockReq = createMockRequest({
+        method: 'PATCH',
+        url: 'https://gateway.example.com/api/resource',
+        body: { value: 'patched' },
+      });
 
-      await proxyToBackend({
+      const response = await proxyToBackend({
         req: mockReq,
-        res: mockRes,
         targetBase: 'https://api.example.com',
         targetPath: '/api/resource',
       });
 
       const [, options] = mockFetch.mock.calls[0];
       expect(options.method).toBe('PATCH');
+      expect(response.status).toBe(200);
     });
   });
 
   describe('header forwarding', () => {
     test('should inject API key with custom header name', async () => {
+      const mockReq = createMockRequest({
+        headers: {},
+      });
+
       await proxyToBackend({
         req: mockReq,
-        res: mockRes,
         targetBase: 'https://api.example.com',
         targetPath: '/api/endpoint',
         apiKey: 'secret-key-123',
@@ -147,12 +163,13 @@ describe('proxyToBackend', () => {
       expect(options.headers['Authorization']).toBe('secret-key-123');
     });
 
-    test('should forward client IP in X-Forwarded-For', async () => {
-      mockReq.ip = '203.0.113.50';
+    test('should forward X-Forwarded-For header', async () => {
+      const mockReq = createMockRequest({
+        headers: { 'x-forwarded-for': '203.0.113.50' },
+      });
 
       await proxyToBackend({
         req: mockReq,
-        res: mockRes,
         targetBase: 'https://api.example.com',
         targetPath: '/api/endpoint',
       });
@@ -161,12 +178,13 @@ describe('proxyToBackend', () => {
       expect(options.headers['X-Forwarded-For']).toBe('203.0.113.50');
     });
 
-    test('should set X-Forwarded-Proto', async () => {
-      mockReq.protocol = 'https';
+    test('should set X-Forwarded-Proto from URL protocol', async () => {
+      const mockReq = createMockRequest({
+        url: 'https://gateway.example.com/api/endpoint',
+      });
 
       await proxyToBackend({
         req: mockReq,
-        res: mockRes,
         targetBase: 'https://api.example.com',
         targetPath: '/api/endpoint',
       });
@@ -176,11 +194,12 @@ describe('proxyToBackend', () => {
     });
 
     test('should set X-x402-Payer header', async () => {
-      mockReq.headers['x-x402-payer'] = '0xpayeraddress';
+      const mockReq = createMockRequest({
+        headers: { 'x-x402-payer': '0xpayeraddress' },
+      });
 
       await proxyToBackend({
         req: mockReq,
-        res: mockRes,
         targetBase: 'https://api.example.com',
         targetPath: '/api/endpoint',
       });
@@ -190,9 +209,10 @@ describe('proxyToBackend', () => {
     });
 
     test('should use "unknown" for missing X-x402-Payer', async () => {
+      const mockReq = createMockRequest();
+
       await proxyToBackend({
         req: mockReq,
-        res: mockRes,
         targetBase: 'https://api.example.com',
         targetPath: '/api/endpoint',
       });
@@ -202,9 +222,10 @@ describe('proxyToBackend', () => {
     });
 
     test('should include User-Agent header', async () => {
+      const mockReq = createMockRequest();
+
       await proxyToBackend({
         req: mockReq,
-        res: mockRes,
         targetBase: 'https://api.example.com',
         targetPath: '/api/endpoint',
       });
@@ -225,14 +246,14 @@ describe('proxyToBackend', () => {
         })
       );
 
-      await proxyToBackend({
+      const mockReq = createMockRequest();
+      const response = await proxyToBackend({
         req: mockReq,
-        res: mockRes,
         targetBase: 'https://api.example.com',
         targetPath: '/api/create',
       });
 
-      expect(mockRes.status).toHaveBeenCalledWith(201);
+      expect(response.status).toBe(201);
     });
 
     test('should forward JSON response', async () => {
@@ -246,34 +267,26 @@ describe('proxyToBackend', () => {
         })
       );
 
-      await proxyToBackend({
+      const mockReq = createMockRequest();
+      const response = await proxyToBackend({
         req: mockReq,
-        res: mockRes,
         targetBase: 'https://api.example.com',
         targetPath: '/api/endpoint',
       });
 
-      expect(mockRes.json).toHaveBeenCalledWith(responseData);
+      const data = await response.json();
+      expect(data).toEqual(responseData);
     });
 
-    test('should set Content-Type header from backend', async () => {
-      mockFetch.mockReturnValueOnce(
-        Promise.resolve({
-          ok: true,
-          status: 200,
-          headers: new Headers({ 'content-type': 'application/json; charset=utf-8' }),
-          text: () => Promise.resolve(JSON.stringify({})),
-        })
-      );
-
-      await proxyToBackend({
+    test('should include CORS headers in response', async () => {
+      const mockReq = createMockRequest();
+      const response = await proxyToBackend({
         req: mockReq,
-        res: mockRes,
         targetBase: 'https://api.example.com',
         targetPath: '/api/endpoint',
       });
 
-      expect(mockRes.set).toHaveBeenCalledWith('Content-Type', 'application/json; charset=utf-8');
+      expect(response.headers.get('Access-Control-Allow-Origin')).toBe('*');
     });
 
     test('should handle non-JSON 5xx responses', async () => {
@@ -286,15 +299,16 @@ describe('proxyToBackend', () => {
         })
       );
 
-      await proxyToBackend({
+      const mockReq = createMockRequest();
+      const response = await proxyToBackend({
         req: mockReq,
-        res: mockRes,
         targetBase: 'https://api.example.com',
         targetPath: '/api/endpoint',
       });
 
-      expect(mockRes.status).toHaveBeenCalledWith(503);
-      expect(mockRes.json).toHaveBeenCalledWith(
+      expect(response.status).toBe(503);
+      const data = await response.json();
+      expect(data).toEqual(
         expect.objectContaining({
           error: 'Backend unavailable',
           status: 503,
@@ -312,42 +326,45 @@ describe('proxyToBackend', () => {
         })
       );
 
-      await proxyToBackend({
+      const mockReq = createMockRequest();
+      const response = await proxyToBackend({
         req: mockReq,
-        res: mockRes,
         targetBase: 'https://api.example.com',
         targetPath: '/api/endpoint',
       });
 
-      expect(mockRes.status).toHaveBeenCalledWith(400);
-      expect(mockRes.send).toHaveBeenCalledWith('Bad Request');
+      expect(response.status).toBe(400);
+      const text = await response.text();
+      expect(text).toBe('Bad Request');
     });
   });
 
   describe('URL construction', () => {
     test('should construct correct URL with path', async () => {
+      const mockReq = createMockRequest();
+
       await proxyToBackend({
         req: mockReq,
-        res: mockRes,
         targetBase: 'https://api.example.com',
         targetPath: '/v1/users/123',
       });
 
-      const [url] = mockFetch.mock.calls[0];
-      expect(url).toBe('https://api.example.com/v1/users/123');
+      const [fetchUrl] = mockFetch.mock.calls[0];
+      expect(fetchUrl).toBe('https://api.example.com/v1/users/123');
     });
 
     test('should handle trailing slash in base URL', async () => {
+      const mockReq = createMockRequest();
+
       await proxyToBackend({
         req: mockReq,
-        res: mockRes,
         targetBase: 'https://api.example.com/',
         targetPath: '/api/endpoint',
       });
 
-      const [url] = mockFetch.mock.calls[0];
+      const [fetchUrl] = mockFetch.mock.calls[0];
       // URL constructor normalizes this
-      expect(url).toContain('api.example.com');
+      expect(fetchUrl).toContain('api.example.com');
     });
   });
 
@@ -355,10 +372,11 @@ describe('proxyToBackend', () => {
     test('should handle fetch network errors', async () => {
       mockFetch.mockReturnValueOnce(Promise.reject(new Error('Network error')));
 
+      const mockReq = createMockRequest();
+
       await expect(
         proxyToBackend({
           req: mockReq,
-          res: mockRes,
           targetBase: 'https://api.example.com',
           targetPath: '/api/endpoint',
         })
@@ -375,15 +393,16 @@ describe('proxyToBackend', () => {
         })
       );
 
-      await proxyToBackend({
+      const mockReq = createMockRequest();
+      const response = await proxyToBackend({
         req: mockReq,
-        res: mockRes,
         targetBase: 'https://api.example.com',
         targetPath: '/api/endpoint',
       });
 
-      // Should send as text since JSON parse failed and status is 200
-      expect(mockRes.send).toHaveBeenCalledWith('not valid json');
+      // Should return text since JSON parse failed and status is 200
+      const text = await response.text();
+      expect(text).toBe('not valid json');
     });
   });
 
@@ -393,9 +412,9 @@ describe('proxyToBackend', () => {
       const originalLog = console.log;
       console.log = consoleSpy;
 
+      const mockReq = createMockRequest();
       await proxyToBackend({
         req: mockReq,
-        res: mockRes,
         targetBase: 'https://api.example.com',
         targetPath: '/api/endpoint',
       });
