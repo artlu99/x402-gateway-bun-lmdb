@@ -8,7 +8,7 @@
 // ============================================================
 
 import type { Request, Response } from 'express';
-import type { ProxyOptions } from './types.js';
+import type { ProxyOptions } from './types';
 
 interface ProxyParams {
   req: Request;

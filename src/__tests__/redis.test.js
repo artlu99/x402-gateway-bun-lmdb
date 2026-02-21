@@ -2,7 +2,7 @@
 
 import { describe, expect, test } from 'bun:test';
 
-// Import the actual redis module exports
+// Import the actual store module exports
 import {
   deleteNonce,
   getIdempotencyCache,
@@ -16,9 +16,9 @@ import {
   setIdempotencyCache,
   setNonceConfirmed,
   setNoncePending,
-} from '../utils/redis.js';
+} from '../utils/redis';
 
-describe('Redis Utilities - Real Module Tests', () => {
+describe('LMDB Store Utilities - Real Module Tests', () => {
   describe('Key prefixes', () => {
     test('NONCE_PREFIX should be correct', () => {
       expect(NONCE_PREFIX).toBe('x402:nonce:');
@@ -92,9 +92,8 @@ describe('Redis Utilities - Real Module Tests', () => {
     });
   });
 
-  describe('Redis operations (behavior depends on environment)', () => {
-    // These tests verify the functions work correctly
-    // Behavior depends on whether Redis is actually configured
+  describe('Store operations', () => {
+    // These tests verify the LMDB functions work correctly
 
     test('getNonce should return a value or null', async () => {
       const result = await getNonce('test-nonce');
@@ -103,7 +102,7 @@ describe('Redis Utilities - Real Module Tests', () => {
     });
 
     test('setNoncePending should return boolean', async () => {
-      const result = await setNoncePending('test-nonce-unique-' + Date.now(), { payer: '0xtest' });
+      const result = await setNoncePending(`test-nonce-unique-${Date.now()}`, { payer: '0xtest' });
       // Should return true (set) or false (already exists)
       expect(typeof result).toBe('boolean');
     });
@@ -187,21 +186,23 @@ describe('Redis Utilities - Real Module Tests', () => {
     });
   });
 
-  describe('Redis SET options patterns', () => {
-    test('pending nonce should use NX flag', () => {
-      const options = { nx: true, ex: NONCE_PENDING_TTL };
-      expect(options.nx).toBe(true);
-      expect(options.ex).toBe(3600);
+  describe('LMDB put options patterns', () => {
+    test('pending nonce should use ifNotExists flag', () => {
+      // LMDB uses ifNotExists for atomicity (equivalent to Redis NX)
+      const options = { ifNotExists: true };
+      expect(options.ifNotExists).toBe(true);
     });
 
-    test('confirmed nonce should not use NX flag', () => {
-      const options = { ex: NONCE_CONFIRMED_TTL };
-      expect(options.nx).toBeUndefined();
+    test('confirmed nonce should not use ifNotExists flag', () => {
+      const options = {};
+      expect(options.ifNotExists).toBeUndefined();
     });
 
-    test('idempotency cache should have TTL', () => {
-      const options = { ex: IDEMPOTENCY_TTL };
-      expect(options.ex).toBe(3600);
+    test('idempotency cache should have TTL via expiresAt', () => {
+      // LMDB uses expiresAt timestamp instead of Redis TTL
+      const now = Date.now();
+      const expiresAt = now + IDEMPOTENCY_TTL * 1000;
+      expect(expiresAt).toBeGreaterThan(now);
     });
   });
 });

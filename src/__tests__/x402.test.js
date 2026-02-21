@@ -1,6 +1,6 @@
 // src/__tests__/x402.test.js
 
-import { test, expect, describe, beforeEach, mock } from 'bun:test';
+import { beforeEach, describe, expect, mock, test } from 'bun:test';
 
 // Mock Redis before importing x402 (x402 imports redis)
 const mockGetNonce = mock(() => Promise.resolve(null));
@@ -10,7 +10,7 @@ const mockDeleteNonce = mock(() => Promise.resolve());
 const mockGetIdempotencyCache = mock(() => Promise.resolve(null));
 const mockSetIdempotencyCache = mock(() => Promise.resolve());
 
-mock.module('../utils/redis.js', () => ({
+mock.module('../utils/redis', () => ({
   getNonce: mockGetNonce,
   setNoncePending: mockSetNoncePending,
   setNonceConfirmed: mockSetNonceConfirmed,
@@ -20,8 +20,8 @@ mock.module('../utils/redis.js', () => ({
 }));
 
 // Import real x402 middleware and route config
-const { x402PaymentMiddleware } = await import('../middleware/x402.js');
-const { ROUTE_CONFIG } = await import('../config/routes.js');
+const { x402PaymentMiddleware } = await import('../middleware/x402');
+const { ROUTE_CONFIG } = await import('../config/routes');
 
 // Helper to create mock Express req/res/next
 function createMockReq(overrides = {}) {

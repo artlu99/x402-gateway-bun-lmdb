@@ -3,10 +3,10 @@ import { fileURLToPath } from 'node:url';
 import cors from 'cors';
 import type { Request, Response } from 'express';
 import express from 'express';
-import { ROUTE_CONFIG, SUPPORTED_NETWORKS } from './config/routes.js';
-import { x402PaymentMiddleware } from './middleware/x402.js';
-import { proxyToBackend } from './proxy.js';
-import { pingRedis } from './utils/redis.js';
+import { ROUTE_CONFIG, SUPPORTED_NETWORKS } from './config/routes';
+import { x402PaymentMiddleware } from './middleware/x402';
+import { proxyToBackend } from './proxy';
+import { pingRedis } from './utils/redis';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -65,7 +65,7 @@ app.get('/health', async (_req: Request, res: Response) => {
     service: 'x402-gateway',
     version: '1.0.0',
     backends,
-    redis: {
+    store: {
       status: redisHealthy ? 'connected' : 'unreachable',
       features: ['nonce-tracking', 'idempotency-cache'],
     },
@@ -287,9 +287,9 @@ app.listen(PORT, async () => {
   console.log(`[x402-gateway] Listening on port ${PORT}`);
   console.log(`[x402-gateway] Settlement: local (viem + @x402/svm)`);
 
-  // Check Redis connectivity
+  // Check store connectivity (LMDB is always available if initialized)
   const redisOk = await pingRedis();
-  console.log(`[x402-gateway] Redis: ${redisOk ? '✓ connected' : '✗ unreachable'}`);
+  console.log(`[x402-gateway] Store: ${redisOk ? '✓ ready (lmdb)' : '✗ error'}`);
 
   // Log backend status
   console.log(`[x402-gateway] Backends:`);

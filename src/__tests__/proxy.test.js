@@ -1,6 +1,6 @@
 // src/__tests__/proxy.test.js
 
-import { test, expect, describe, beforeEach, mock, afterEach } from 'bun:test';
+import { beforeEach, describe, expect, mock, test } from 'bun:test';
 
 // Mock global fetch
 const mockFetch = mock(() =>
@@ -15,7 +15,7 @@ const mockFetch = mock(() =>
 global.fetch = mockFetch;
 
 // Import after mocking
-const { proxyToBackend } = await import('../proxy.js');
+const { proxyToBackend } = await import('../proxy');
 
 describe('proxyToBackend', () => {
   let mockReq;

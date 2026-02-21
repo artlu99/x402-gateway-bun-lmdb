@@ -3,7 +3,7 @@
 import { describe, expect, test } from 'bun:test';
 
 // Import the actual routes configuration
-import { ALL_NETWORKS, ROUTE_CONFIG, SUPPORTED_NETWORKS } from '../config/routes.js';
+import { ALL_NETWORKS, ROUTE_CONFIG, SUPPORTED_NETWORKS } from '../config/routes';
 
 describe('Route Configuration - Real Module Tests', () => {
   describe('ROUTE_CONFIG', () => {

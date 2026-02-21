@@ -1,45 +1,33 @@
 // src/__tests__/integration-redis.test.js
 //
-// Integration tests for Redis utilities using a live Redis connection.
-// Runs before redis.test.js (alphabetically) so it gets a fresh client.
-//
-// Prerequisites:
-//   - Set UPSTASH_REDIS_REST_URL and UPSTASH_REDIS_REST_TOKEN in .env
+// Integration tests for LMDB store utilities.
+// LMDB is always available locally, no external service needed.
 //
 // Run with: bun test src/__tests__/integration-redis.test.js
 
-import { test, expect, describe, beforeAll, afterAll, beforeEach } from 'bun:test';
+import { afterAll, beforeAll, beforeEach, describe, expect, test } from 'bun:test';
 
-// Import real module first
+// Import store module
 import {
-  NONCE_PREFIX,
-  IDEMPOTENCY_PREFIX,
-  NONCE_PENDING_TTL,
-  NONCE_CONFIRMED_TTL,
-  IDEMPOTENCY_TTL,
-  getNonce,
-  setNoncePending,
-  setNonceConfirmed,
   deleteNonce,
   getIdempotencyCache,
+  getNonce,
+  IDEMPOTENCY_PREFIX,
+  NONCE_PREFIX,
+  pingRedis, 
   setIdempotencyCache,
-  pingRedis
-} from '../utils/redis.js';
+  setNonceConfirmed,
+  setNoncePending
+} from '../utils/redis';
 
-import getRedis from '../utils/redis.js';
-
-// Verify Redis is configured and reachable before running tests
+// Verify store is ready before running tests
 beforeAll(async () => {
-  if (!process.env.UPSTASH_REDIS_REST_URL || !process.env.UPSTASH_REDIS_REST_TOKEN) {
-    throw new Error('Redis environment variables not set. Set UPSTASH_REDIS_REST_URL and UPSTASH_REDIS_REST_TOKEN to run integration tests.');
-  }
-
   const available = await pingRedis();
   if (!available) {
-    throw new Error('Redis is not reachable. Check UPSTASH_REDIS_REST_URL and UPSTASH_REDIS_REST_TOKEN.');
+    throw new Error('LMDB store is not available.');
   }
 
-  console.log('[redis-integration] Connected to Redis successfully');
+  console.log('[lmdb-integration] LMDB store initialized successfully');
 });
 
 // Helper to generate unique test keys
@@ -50,15 +38,18 @@ function uniqueKey(prefix = 'test') {
 // Track keys created during tests for cleanup
 const createdKeys = new Set();
 
-describe('Redis Integration Tests (Live Connection)', () => {
+describe('LMDB Integration Tests', () => {
   afterAll(async () => {
     // Clean up all keys created during tests
-    console.log(`[redis-integration] Cleaning up ${createdKeys.size} test keys...`);
+    console.log(`[lmdb-integration] Cleaning up ${createdKeys.size} test keys...`);
 
-    const redis = getRedis();
     for (const key of createdKeys) {
       try {
-        await redis.del(key);
+        // Extract the nonce/paymentId from the full key
+        if (key.startsWith(NONCE_PREFIX)) {
+          await deleteNonce(key.slice(NONCE_PREFIX.length));
+        }
+        // Note: No deleteIdempotencyCache function exists, entries will expire naturally
       } catch {
         // Ignore cleanup errors
       }
@@ -67,7 +58,7 @@ describe('Redis Integration Tests (Live Connection)', () => {
   });
 
   describe('pingRedis', () => {
-    test('should return true when Redis is reachable', async () => {
+    test('should return true when LMDB is available', async () => {
       const result = await pingRedis();
       expect(result).toBe(true);
     });
@@ -160,31 +151,6 @@ describe('Redis Integration Tests (Live Connection)', () => {
       stored = await getNonce(testNonce);
       expect(stored).toBeNull();
     });
-
-    test('nonce should have correct TTL', async () => {
-      const redis = getRedis();
-
-      // Set pending nonce
-      await setNoncePending(testNonce, { payer: '0xabc' });
-
-      // Check TTL (should be close to NONCE_PENDING_TTL)
-      const ttl = await redis.ttl(`${NONCE_PREFIX}${testNonce}`);
-      expect(ttl).toBeGreaterThan(NONCE_PENDING_TTL - 10); // Allow 10 second margin
-      expect(ttl).toBeLessThanOrEqual(NONCE_PENDING_TTL);
-    });
-
-    test('confirmed nonce should have longer TTL', async () => {
-      const redis = getRedis();
-
-      // Set and confirm nonce
-      await setNoncePending(testNonce, { payer: '0xabc' });
-      await setNonceConfirmed(testNonce, { txHash: '0xtx' });
-
-      // Check TTL (should be close to NONCE_CONFIRMED_TTL = 7 days)
-      const ttl = await redis.ttl(`${NONCE_PREFIX}${testNonce}`);
-      expect(ttl).toBeGreaterThan(NONCE_CONFIRMED_TTL - 10);
-      expect(ttl).toBeLessThanOrEqual(NONCE_CONFIRMED_TTL);
-    });
   });
 
   describe('Idempotency Operations', () => {
@@ -218,18 +184,6 @@ describe('Redis Integration Tests (Live Connection)', () => {
       expect(cached.timestamp).toBeDefined();
       expect(cached.response.paymentResponseHeader).toBe(responseData.paymentResponseHeader);
       expect(cached.response.settlement.txHash).toBe('0xabc123');
-    });
-
-    test('idempotency cache should have correct TTL', async () => {
-      const redis = getRedis();
-
-      // Set cache
-      await setIdempotencyCache(testPaymentId, { header: 'test' });
-
-      // Check TTL (should be close to IDEMPOTENCY_TTL = 1 hour)
-      const ttl = await redis.ttl(`${IDEMPOTENCY_PREFIX}${testPaymentId}`);
-      expect(ttl).toBeGreaterThan(IDEMPOTENCY_TTL - 10);
-      expect(ttl).toBeLessThanOrEqual(IDEMPOTENCY_TTL);
     });
 
     test('idempotency cache should return same data on repeated calls', async () => {

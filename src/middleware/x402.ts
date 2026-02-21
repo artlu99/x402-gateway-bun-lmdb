@@ -1,3 +1,4 @@
+import crypto from 'node:crypto';
 import { base58 } from '@scure/base';
 import { createKeyPairSignerFromBytes } from '@solana/kit';
 import { type FacilitatorRpcConfig, toFacilitatorSvmSigner } from '@x402/svm';
@@ -27,7 +28,7 @@ import {
   polygon,
   unichain,
 } from 'viem/chains';
-import { ROUTE_CONFIG, SUPPORTED_NETWORKS } from '../config/routes.js';
+import { ROUTE_CONFIG, SUPPORTED_NETWORKS } from '../config/routes';
 import type {
   NetworkConfig,
   PaymentPayload,
@@ -35,7 +36,7 @@ import type {
   RouteConfig,
   SettlementResult,
   VerificationResult
-} from '../types.js';
+} from '../types';
 import {
   deleteNonce,
   getIdempotencyCache,
@@ -43,7 +44,7 @@ import {
   setIdempotencyCache,
   setNonceConfirmed,
   setNoncePending,
-} from '../utils/redis.js';
+} from '../utils/redis';
 
 // ============================================================
 // EIP-3009 transferWithAuthorization ABI (EVM only)
@@ -381,12 +382,6 @@ async function settlePaymentEvm(paymentPayload: PaymentPayload): Promise<Settlem
 // ============================================================
 // SVM: Verify payment via @x402/svm facilitator
 // ============================================================
-interface SvmVerifyResultInternal {
-  isValid: boolean;
-  invalidReason?: string;
-  payer?: string;
-}
-
 interface SvmSettleResultInternal {
   success: boolean;
   errorReason?: string;
@@ -425,8 +420,7 @@ async function verifyPaymentSvm(
   };
 
   try {
-    // Cast to any to bypass strict type checking for @x402/svm library
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    // biome-ignore lint/suspicious/noExplicitAny: @x402/svm library
     const result = await (facilitator.verify as any)(svmPayload, svmRequirements);
     if (!result.isValid) {
       return { valid: false, reason: `SVM verification failed: ${result.invalidReason ?? 'unknown'}` };
@@ -471,8 +465,7 @@ async function settlePaymentSvm(
     extra: { feePayer: feePayerAddress },
   };
 
-  // Cast to any to bypass strict type checking for @x402/svm library
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  // biome-ignore lint/suspicious/noExplicitAny: @x402/svm library
   const result = await (facilitator.settle as any)(svmPayload, svmRequirements) as SvmSettleResultInternal;
   if (!result.success) throw new Error(`SVM settlement failed: ${result.errorReason ?? 'unknown'}`);
   invariant(result.payer, 'Payer is required');
@@ -852,8 +845,7 @@ export function x402PaymentMiddleware(routeKey: string): RequestHandler {
     if (useSvm) {
       const txData = paymentPayload.payload?.transaction;
       if (txData) {
-        const crypto = await import('crypto');
-        nonceKey = 'svm:' + crypto.createHash('sha256').update(txData).digest('hex');
+        nonceKey = `svm:${crypto.createHash('sha256').update(txData).digest('hex')}`;
       }
     } else if (!useEvmFacilitator) {
       nonceKey = paymentPayload.payload?.authorization?.nonce ?? null;

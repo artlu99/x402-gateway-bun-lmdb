@@ -33,7 +33,7 @@
 //   4. Fund facilitator wallet with SOL for gas
 // ============================================================
 
-import type { TokenConfig, NetworkConfig, NetworkRegistry, RouteConfig, RouteRegistry } from '../types.js';
+import type { NetworkConfig, NetworkRegistry, RouteConfig, RouteRegistry, TokenConfig } from '../types';
 
 // ─── Token Configs ─────────────────────────────────────────
 // All native Circle USDC contracts share the same EIP-712 domain:
