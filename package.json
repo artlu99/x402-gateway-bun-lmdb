@@ -7,7 +7,8 @@
 	"scripts": {
 		"start": "bun src/index.ts",
 		"dev": "bun --watch src/index.ts",
-		"typecheck": "tsc --noEmit"
+		"typecheck": "tsc --noEmit",
+		"test:endpoints": "RUN_INTEGRATION=1 bun test src/__tests__/endpoints.test.js"
 	},
 	"keywords": [
 		"x402",

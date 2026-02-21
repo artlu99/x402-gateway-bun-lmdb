@@ -39,7 +39,6 @@ import type {
 } from "../types";
 import {
 	CORS_HEADERS,
-	CORS_OPTIONS_RESPONSE,
 	corsJsonWithHeaders,
 } from "../utils/cors";
 import {
@@ -1170,7 +1169,7 @@ export function withPayment(
 	return async (req: Request): Promise<Response> => {
 		// Handle OPTIONS preflight requests directly
 		if (req.method === "OPTIONS") {
-			return CORS_OPTIONS_RESPONSE;
+			return new Response(null, { status: 204, headers: CORS_HEADERS });
 		}
 
 		const result = await verifyAndSettlePayment(req, routeKey);

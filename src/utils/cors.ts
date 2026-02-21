@@ -6,12 +6,6 @@ export const CORS_HEADERS: Record<string, string> = {
 		"Content-Type, Payment-Signature, X-Payment, X-X402-Payer",
 };
 
-// Pre-create OPTIONS response - zero allocation per request
-export const CORS_OPTIONS_RESPONSE = new Response(null, {
-	status: 204,
-	headers: CORS_HEADERS,
-});
-
 // For dynamic JSON responses with CORS
 export function corsJson(data: unknown, status = 200): Response {
 	return Response.json(data, { status, headers: CORS_HEADERS });

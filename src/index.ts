@@ -1,7 +1,7 @@
 import { ROUTE_CONFIG, SUPPORTED_NETWORKS } from "./config/routes";
 import { withPayment } from "./middleware/x402";
 import { proxyToBackend } from "./proxy";
-import { CORS_HEADERS, CORS_OPTIONS_RESPONSE, corsJson } from "./utils/cors";
+import { CORS_HEADERS, corsJson } from "./utils/cors";
 import { pingStore } from "./utils/store";
 
 const PORT = process.env.PORT ?? 8080;
@@ -303,8 +303,9 @@ Bun.serve({
 	port: PORT,
 	routes: buildRoutes(),
 	async fetch(req) {
-		// Handle OPTIONS preflight - return pre-created response (zero allocation)
-		if (req.method === "OPTIONS") return CORS_OPTIONS_RESPONSE;
+		// Handle OPTIONS preflight - fresh Response per request (Bun may not expose headers on reused Response)
+		if (req.method === "OPTIONS")
+			return new Response(null, { status: 204, headers: CORS_HEADERS });
 
 		// Fallback 404 - return pre-created response
 		return STATIC_RESPONSES.notFound;
