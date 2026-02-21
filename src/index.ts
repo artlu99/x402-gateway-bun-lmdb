@@ -1,22 +1,18 @@
-// src/index.js
-
-import express from 'express';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import cors from 'cors';
-import dotenv from 'dotenv';
+import type { Request, Response } from 'express';
+import express from 'express';
+import { ROUTE_CONFIG, SUPPORTED_NETWORKS } from './config/routes.js';
 import { x402PaymentMiddleware } from './middleware/x402.js';
 import { proxyToBackend } from './proxy.js';
-import { ROUTE_CONFIG, SUPPORTED_NETWORKS } from './config/routes.js';
 import { pingRedis } from './utils/redis.js';
-import path from 'path';
-import { fileURLToPath } from 'url';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-dotenv.config();
-
 const app = express();
-const PORT = process.env.PORT || 8080;
+const PORT = process.env.PORT ?? 8080;
 
 // Trust proxy headers (Cloudflare, Cloud Run, load balancers)
 app.set('trust proxy', true);
@@ -31,42 +27,31 @@ app.use(express.static('public'));
 // ─── Helpers ───────────────────────────────────────────────
 
 // Express 5 returns wildcard params as arrays
-function getSubpath(params) {
-  return Array.isArray(params.path) ? params.path.join('/') : params.path;
-}
-
-// Extract payer address from x402 payment header
-function extractPayerFromPaymentHeader(req) {
-  const paymentHeader = req.headers['payment-signature'] || req.headers['x-payment'];
-  if (!paymentHeader) return null;
-  try {
-    const paymentPayload = JSON.parse(Buffer.from(paymentHeader, 'base64').toString());
-    return paymentPayload.payload?.authorization?.from || null;
-  } catch {
-    return null;
-  }
+function getSubpath(params: Record<string, unknown>): string {
+  const pathParam = params['path'];
+  return Array.isArray(pathParam) ? pathParam.join('/') : (pathParam as string) ?? '';
 }
 
 // ============================================================
 // Landing page
 // ============================================================
-app.get('/', (req, res) => {
+app.get('/', (_req: Request, res: Response) => {
   res.sendFile(path.join(__dirname, '../public/index.html'));
 });
 
 // ============================================================
 // Health check (unprotected)
 // ============================================================
-app.get('/health', async (req, res) => {
+app.get('/health', async (_req: Request, res: Response) => {
   const redisHealthy = await pingRedis();
 
   // Categorize networks
   const networkKeys = Object.keys(SUPPORTED_NETWORKS);
-  const evmNetworks = networkKeys.filter(k => SUPPORTED_NETWORKS[k].vm === 'evm');
-  const svmNetworks = networkKeys.filter(k => SUPPORTED_NETWORKS[k].vm === 'svm');
+  const evmNetworks = networkKeys.filter(k => SUPPORTED_NETWORKS[k]?.vm === 'evm');
+  const svmNetworks = networkKeys.filter(k => SUPPORTED_NETWORKS[k]?.vm === 'svm');
 
   // Check backend status for each route
-  const backends = {};
+  const backends: Record<string, { configured: boolean; status: string }> = {};
   for (const [key, route] of Object.entries(ROUTE_CONFIG)) {
     const configured = !!route.backendUrl;
     backends[key] = {
@@ -88,33 +73,38 @@ app.get('/health', async (req, res) => {
       settlement: 'local',
       networks: networkKeys.map(caip2 => {
         const net = SUPPORTED_NETWORKS[caip2];
+        if (!net) return null;
         return {
           network: caip2,
           vm: net.vm,
-          ...(net.chainId && { chainId: net.chainId }),
+          ...(net.chainId !== undefined && { chainId: net.chainId }),
           token: net.token.address,
           settlement: net.facilitator ? 'facilitator' : 'local',
         };
-      }),
+      }).filter((n): n is NonNullable<typeof n> => n !== null),
       summary: {
         total: networkKeys.length,
         evm: evmNetworks.length,
         svm: svmNetworks.length,
       },
     },
-    routes: Object.keys(ROUTE_CONFIG).map(key => ({
-      path: ROUTE_CONFIG[key].path,
-      price: ROUTE_CONFIG[key].price,
-      backend: ROUTE_CONFIG[key].backendName,
-      description: ROUTE_CONFIG[key].description,
-    })),
+    routes: Object.keys(ROUTE_CONFIG).map(key => {
+      const route = ROUTE_CONFIG[key];
+      if (!route) return null;
+      return {
+        path: route.path,
+        price: route.price,
+        backend: route.backendName,
+        description: route.description,
+      };
+    }).filter((r): r is NonNullable<typeof r> => r !== null),
   });
 });
 
 // ============================================================
 // x402 Discovery Document (/.well-known/x402)
 // ============================================================
-app.get('/.well-known/x402', (req, res) => {
+app.get('/.well-known/x402', (req: Request, res: Response) => {
   const baseUrl = `${req.protocol}://${req.get('host')}`;
   const resources = Object.values(ROUTE_CONFIG).map(route => `${baseUrl}${route.path}`);
 
@@ -122,19 +112,20 @@ app.get('/.well-known/x402', (req, res) => {
   const networkKeys = Object.keys(SUPPORTED_NETWORKS);
   const chainNames = networkKeys.map(caip2 => {
     const net = SUPPORTED_NETWORKS[caip2];
+    if (!net) return 'Unknown';
     // Simple name extraction from CAIP-2 or config
     if (net.vm === 'svm') return 'Solana';
-    const chainMap = {
+    const chainMap: Record<number, string> = {
       8453: 'Base', 1: 'Ethereum', 42161: 'Arbitrum', 10: 'Optimism',
       137: 'Polygon', 43114: 'Avalanche', 130: 'Unichain', 59144: 'Linea',
     };
-    return chainMap[net.chainId] || `Chain ${net.chainId}`;
+    return net.chainId !== undefined ? (chainMap[net.chainId] ?? `Chain ${net.chainId}`) : 'Unknown';
   });
 
   // Build route documentation
-  const routeDocs = Object.entries(ROUTE_CONFIG).map(([key, route]) => [
+  const routeDocs = Object.entries(ROUTE_CONFIG).map(([_key, route]) => [
     `### ${route.backendName} — ${route.price}/request`,
-    `\`POST /v1/${key}/*\``,
+    `\`POST /v1/${_key}/*\``,
     route.description,
     '',
   ].join('\n')).join('\n');
@@ -161,13 +152,14 @@ app.get('/.well-known/x402', (req, res) => {
 // ============================================================
 // Accepted payment routes (agent-friendly discovery)
 // ============================================================
-app.get('/accepted', (req, res) => {
+app.get('/accepted', (req: Request, res: Response) => {
   const basePriceDecimals = 6;
 
   const routes = Object.entries(ROUTE_CONFIG).map(([key, route]) => {
     const basePriceAtomic = BigInt(route.priceAtomic);
 
     const networks = Object.entries(SUPPORTED_NETWORKS).map(([caip2, network]) => {
+      if (!network) return null;
       const decimalDiff = network.token.decimals - basePriceDecimals;
       const amountRequired = decimalDiff > 0
         ? (basePriceAtomic * (10n ** BigInt(decimalDiff))).toString()
@@ -176,21 +168,21 @@ app.get('/accepted', (req, res) => {
       return {
         network: caip2,
         vm: network.vm,
-        ...(network.chainId && { chainId: network.chainId }),
+        ...(network.chainId !== undefined && { chainId: network.chainId }),
         asset: network.token.address,
-        assetName: network.token.name || network.token.address,
+        assetName: network.token.name ?? network.token.address,
         decimals: network.token.decimals,
         amountRequired,
         settlement: network.facilitator ? 'facilitator' : 'local',
       };
-    });
+    }).filter((n): n is NonNullable<typeof n> => n !== null);
 
     return {
       path: `/v1/${key}/*`,
       backend: route.backendName,
       price: route.price,
-      payTo: route.payTo || null,
-      payToSol: route.payToSol || null,
+      payTo: route.payTo ?? null,
+      payToSol: route.payToSol ?? null,
       description: route.description,
       mimeType: route.mimeType,
       networks,
@@ -230,34 +222,41 @@ app.get('/accepted', (req, res) => {
 // Your handler then proxies the request to your backend.
 
 // ── Example: "myapi" route (PAID) ────────────────────────
-app.all('/v1/myapi/{*path}', x402PaymentMiddleware('myapi'), async (req, res) => {
+app.all('/v1/myapi/{*path}', x402PaymentMiddleware('myapi'), async (req: Request, res: Response) => {
   try {
     const subpath = getSubpath(req.params);
-    const route = ROUTE_CONFIG.myapi;
+    const route = ROUTE_CONFIG['myapi'];
+    if (!route) {
+      res.status(500).json({ error: 'Route myapi not configured' });
+      return;
+    }
 
     if (!route.backendUrl) {
-      return res.status(503).json({
+      res.status(503).json({
         error: 'Backend not configured',
         message: 'MY_BACKEND_URL environment variable is not set',
       });
+      return;
     }
 
     // Optional: Map friendly paths to backend paths
-    const PATH_ALIASES = {
+    const PATH_ALIASES: Record<string, string> = {
       // 'friendly-name': 'actual-backend-endpoint',
     };
-    const resolvedSubpath = PATH_ALIASES[subpath] || subpath;
+    const resolvedSubpath = PATH_ALIASES[subpath] ?? subpath;
 
+    const apiKey = process.env[route.backendApiKeyEnv];
     await proxyToBackend({
       req,
       res,
       targetBase: route.backendUrl,
       targetPath: '/api/' + resolvedSubpath,
-      apiKey: process.env[route.backendApiKeyEnv],
+      ...(apiKey && { apiKey }),
       apiKeyHeader: route.backendApiKeyHeader,
     });
   } catch (err) {
-    console.error('[myapi] Proxy error:', err.message);
+    const error = err as Error;
+    console.error('[myapi] Proxy error:', error.message);
     res.status(502).json({ error: 'Backend unavailable' });
   }
 });
@@ -266,7 +265,7 @@ app.all('/v1/myapi/{*path}', x402PaymentMiddleware('myapi'), async (req, res) =>
 // app.get('/v1/myapi/health', async (req, res) => {
 //   try {
 //     const route = ROUTE_CONFIG.myapi;
-//     if (!route.backendUrl) {
+//     if (!route || !route.backendUrl) {
 //       return res.status(503).json({ error: 'Backend not configured' });
 //     }
 //     await proxyToBackend({
@@ -301,13 +300,14 @@ app.listen(PORT, async () => {
 
   // Log active networks
   const networkKeys = Object.keys(SUPPORTED_NETWORKS);
-  const evmCount = networkKeys.filter(k => SUPPORTED_NETWORKS[k].vm === 'evm').length;
-  const svmCount = networkKeys.filter(k => SUPPORTED_NETWORKS[k].vm === 'svm').length;
+  const evmCount = networkKeys.filter(k => SUPPORTED_NETWORKS[k]?.vm === 'evm').length;
+  const svmCount = networkKeys.filter(k => SUPPORTED_NETWORKS[k]?.vm === 'svm').length;
   console.log(`[x402-gateway] Active networks (${networkKeys.length}): ${evmCount} EVM, ${svmCount} SVM`);
 
   networkKeys.forEach(caip2 => {
     const net = SUPPORTED_NETWORKS[caip2];
-    let mode;
+    if (!net) return;
+    let mode: string;
     if (net.vm === 'svm') {
       mode = 'local settlement (@x402/svm)';
     } else if (net.facilitator) {
@@ -315,7 +315,7 @@ app.listen(PORT, async () => {
     } else {
       mode = 'local settlement (viem)';
     }
-    const chainLabel = net.chainId ? `chain ${net.chainId}` : net.vm.toUpperCase();
+    const chainLabel = net.chainId !== undefined ? `chain ${net.chainId}` : net.vm.toUpperCase();
     console.log(`  ${caip2} (${chainLabel}) — ${mode}`);
   });
 

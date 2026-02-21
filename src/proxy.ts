@@ -1,5 +1,3 @@
-// src/proxy.js
-
 // ============================================================
 // Proxy verified x402 requests to backend services.
 // Injects internal API key so the backend never needs to know
@@ -9,26 +7,47 @@
 // for backends that only accept POST.
 // ============================================================
 
-export async function proxyToBackend({ req, res, targetBase, targetPath, apiKey, apiKeyHeader, forceMethod }) {
+import type { Request, Response } from 'express';
+import type { ProxyOptions } from './types.js';
+
+interface ProxyParams {
+  req: Request;
+  res: Response;
+  targetBase: string;
+  targetPath: string;
+  apiKey?: string;
+  apiKeyHeader?: string;
+  forceMethod?: string;
+}
+
+export async function proxyToBackend({
+  req,
+  res,
+  targetBase,
+  targetPath,
+  apiKey,
+  apiKeyHeader,
+  forceMethod,
+}: ProxyParams): Promise<void> {
   // Build the full backend URL
   const url = new URL(targetPath, targetBase);
 
   // Determine the method to send to the backend
-  const backendMethod = forceMethod || req.method;
+  const backendMethod = forceMethod ?? req.method;
 
   // Build request body:
   //   - POST/PUT/PATCH with body → use body as-is
   //   - GET with query params + forceMethod POST → convert query to body
-  let body = null;
+  let body: Record<string, unknown> | null = null;
 
-  if (['POST', 'PUT', 'PATCH'].includes(req.method) && req.body && Object.keys(req.body).length > 0) {
-    body = req.body;
-  } else if (req.query && Object.keys(req.query).length > 0) {
-    body = { ...req.query };
+  if (['POST', 'PUT', 'PATCH'].includes(req.method) && req.body && Object.keys(req.body as object).length > 0) {
+    body = req.body as Record<string, unknown>;
+  } else if (req.query && Object.keys(req.query as object).length > 0) {
+    body = { ...req.query as Record<string, unknown> };
   }
 
   // Build headers
-  const headers = {
+  const headers: Record<string, string> = {
     'Content-Type': 'application/json',
     'Accept': 'application/json',
     'User-Agent': 'x402-Gateway/1.0',
@@ -43,11 +62,11 @@ export async function proxyToBackend({ req, res, targetBase, targetPath, apiKey,
   if (req.ip) {
     headers['X-Forwarded-For'] = req.ip;
   }
-  headers['X-Forwarded-Proto'] = req.protocol || 'https';
-  headers['X-x402-Payer'] = req.headers?.['x-x402-payer'] || 'unknown';
+  headers['X-Forwarded-Proto'] = req.protocol ?? 'https';
+  headers['X-x402-Payer'] = (req.headers?.['x-x402-payer'] as string | undefined) ?? 'unknown';
 
   // Build fetch options
-  const fetchOptions = {
+  const fetchOptions: RequestInit = {
     method: backendMethod,
     headers,
   };
@@ -56,7 +75,7 @@ export async function proxyToBackend({ req, res, targetBase, targetPath, apiKey,
     fetchOptions.body = JSON.stringify(body);
   }
 
-  console.log(`[proxy] ${req.method} -> ${backendMethod} ${url.toString()}${body ? ' body: ' + JSON.stringify(body) : ''}`);
+  console.log(`[proxy] ${req.method} -> ${backendMethod} ${url.toString()}${body ? ` body: ${JSON.stringify(body)}` : ''}`);
 
   // Call the backend
   const backendRes = await fetch(url.toString(), fetchOptions);
@@ -74,7 +93,7 @@ export async function proxyToBackend({ req, res, targetBase, targetPath, apiKey,
   const responseText = await backendRes.text();
 
   try {
-    const json = JSON.parse(responseText);
+    const json = JSON.parse(responseText) as unknown;
     res.json(json);
   } catch {
     // If backend returned non-JSON (e.g. Cloudflare HTML error page),
@@ -91,3 +110,6 @@ export async function proxyToBackend({ req, res, targetBase, targetPath, apiKey,
     }
   }
 }
+
+// Export type for external use
+export type { ProxyOptions };

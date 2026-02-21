@@ -1,6 +1,5 @@
-// src/utils/redis.js
-
 import { Redis } from '@upstash/redis';
+import type { IdempotencyCache, NonceData } from '../types.js';
 
 // ============================================================
 // Upstash Redis client for x402 payment gateway
@@ -16,14 +15,16 @@ import { Redis } from '@upstash/redis';
 // process.env values are available after dotenv.config() runs.
 // ============================================================
 
-let _redis = null;
+let _redis: Redis | null = null;
 
-function getRedis() {
+function getRedis(): Redis {
   if (!_redis) {
-    _redis = new Redis({
-      url: process.env.UPSTASH_REDIS_REST_URL,
-      token: process.env.UPSTASH_REDIS_REST_TOKEN,
-    });
+    const url = process.env.UPSTASH_REDIS_REST_URL;
+    const token = process.env.UPSTASH_REDIS_REST_TOKEN;
+    if (!url || !token) {
+      throw new Error('UPSTASH_REDIS_REST_URL and UPSTASH_REDIS_REST_TOKEN must be set');
+    }
+    _redis = new Redis({ url, token });
   }
   return _redis;
 }
@@ -45,12 +46,13 @@ export const IDEMPOTENCY_TTL = 3600;          // 1 hour for cached responses
  * Check if a nonce has already been used.
  * Returns the stored data if used, null if available.
  */
-export async function getNonce(nonce) {
+export async function getNonce(nonce: string): Promise<NonceData | null> {
   try {
-    const data = await getRedis().get(`${NONCE_PREFIX}${nonce}`);
-    return data || null;
+    const data = await getRedis().get<NonceData>(`${NONCE_PREFIX}${nonce}`);
+    return data ?? null;
   } catch (err) {
-    console.error('[redis] getNonce error:', err.message);
+    const error = err as Error;
+    console.error('[redis] getNonce error:', error.message);
     return null; // Fail open — settlement still checks on-chain
   }
 }
@@ -60,7 +62,7 @@ export async function getNonce(nonce) {
  * Short TTL so it auto-cleans if settlement never completes.
  * Returns true if set (nonce was available), false if already exists (replay).
  */
-export async function setNoncePending(nonce, metadata = {}) {
+export async function setNoncePending(nonce: string, metadata: Record<string, unknown> = {}): Promise<boolean> {
   try {
     const result = await getRedis().set(
       `${NONCE_PREFIX}${nonce}`,
@@ -69,7 +71,8 @@ export async function setNoncePending(nonce, metadata = {}) {
     );
     return result === 'OK';
   } catch (err) {
-    console.error('[redis] setNoncePending error:', err.message);
+    const error = err as Error;
+    console.error('[redis] setNoncePending error:', error.message);
     return false; // Fail closed — reject payment to be safe
   }
 }
@@ -77,7 +80,7 @@ export async function setNoncePending(nonce, metadata = {}) {
 /**
  * Mark a nonce as confirmed after successful settlement.
  */
-export async function setNonceConfirmed(nonce, settlementData = {}) {
+export async function setNonceConfirmed(nonce: string, settlementData: Record<string, unknown> = {}): Promise<void> {
   try {
     await getRedis().set(
       `${NONCE_PREFIX}${nonce}`,
@@ -85,18 +88,20 @@ export async function setNonceConfirmed(nonce, settlementData = {}) {
       { ex: NONCE_CONFIRMED_TTL }
     );
   } catch (err) {
-    console.error('[redis] setNonceConfirmed error:', err.message);
+    const error = err as Error;
+    console.error('[redis] setNonceConfirmed error:', error.message);
   }
 }
 
 /**
  * Delete a nonce (e.g., if settlement fails and we want to allow retry).
  */
-export async function deleteNonce(nonce) {
+export async function deleteNonce(nonce: string): Promise<void> {
   try {
     await getRedis().del(`${NONCE_PREFIX}${nonce}`);
   } catch (err) {
-    console.error('[redis] deleteNonce error:', err.message);
+    const error = err as Error;
+    console.error('[redis] deleteNonce error:', error.message);
   }
 }
 
@@ -107,12 +112,13 @@ export async function deleteNonce(nonce) {
 /**
  * Get a cached response for a payment identifier.
  */
-export async function getIdempotencyCache(paymentId) {
+export async function getIdempotencyCache(paymentId: string): Promise<IdempotencyCache | null> {
   try {
-    const data = await getRedis().get(`${IDEMPOTENCY_PREFIX}${paymentId}`);
-    return data || null;
+    const data = await getRedis().get<IdempotencyCache>(`${IDEMPOTENCY_PREFIX}${paymentId}`);
+    return data ?? null;
   } catch (err) {
-    console.error('[redis] getIdempotencyCache error:', err.message);
+    const error = err as Error;
+    console.error('[redis] getIdempotencyCache error:', error.message);
     return null;
   }
 }
@@ -120,7 +126,7 @@ export async function getIdempotencyCache(paymentId) {
 /**
  * Cache a response for a payment identifier after successful settlement.
  */
-export async function setIdempotencyCache(paymentId, responseData) {
+export async function setIdempotencyCache(paymentId: string, responseData: Record<string, unknown>): Promise<void> {
   try {
     await getRedis().set(
       `${IDEMPOTENCY_PREFIX}${paymentId}`,
@@ -128,7 +134,8 @@ export async function setIdempotencyCache(paymentId, responseData) {
       { ex: IDEMPOTENCY_TTL }
     );
   } catch (err) {
-    console.error('[redis] setIdempotencyCache error:', err.message);
+    const error = err as Error;
+    console.error('[redis] setIdempotencyCache error:', error.message);
   }
 }
 
@@ -136,12 +143,13 @@ export async function setIdempotencyCache(paymentId, responseData) {
 // Health Check
 // ============================================================
 
-export async function pingRedis() {
+export async function pingRedis(): Promise<boolean> {
   try {
     const result = await getRedis().ping();
     return result === 'PONG';
   } catch (err) {
-    console.error('[redis] ping error:', err.message);
+    const error = err as Error;
+    console.error('[redis] ping error:', error.message);
     return false;
   }
 }

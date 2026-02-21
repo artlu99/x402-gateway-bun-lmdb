@@ -1,40 +1,49 @@
-// src/middleware/x402.js
-
+import { base58 } from '@scure/base';
+import { createKeyPairSignerFromBytes } from '@solana/kit';
+import { type FacilitatorRpcConfig, toFacilitatorSvmSigner } from '@x402/svm';
+import { ExactSvmScheme } from '@x402/svm/exact/facilitator';
+import type { NextFunction, Request, RequestHandler, Response } from 'express';
+import invariant from 'tiny-invariant';
 import {
+  type Chain,
   createPublicClient,
   createWalletClient,
+  type Hex,
   http,
-  verifyTypedData,
-  parseSignature,
+  type PublicClient,
   parseAbi,
+  parseSignature,
+  verifyTypedData
 } from 'viem';
 import { privateKeyToAccount } from 'viem/accounts';
 import {
-  base,
-  mainnet,
   arbitrum,
+  avalanche,
+  base,
+  linea,
+  mainnet,
+  megaeth,
   optimism,
   polygon,
-  avalanche,
-  linea,
   unichain,
-  megaeth,
 } from 'viem/chains';
 import { ROUTE_CONFIG, SUPPORTED_NETWORKS } from '../config/routes.js';
+import type {
+  NetworkConfig,
+  PaymentPayload,
+  PaymentResponseData,
+  RouteConfig,
+  SettlementResult,
+  VerificationResult
+} from '../types.js';
 import {
-  getNonce,
-  setNoncePending,
-  setNonceConfirmed,
   deleteNonce,
   getIdempotencyCache,
+  getNonce,
   setIdempotencyCache,
+  setNonceConfirmed,
+  setNoncePending,
 } from '../utils/redis.js';
-
-// ─── SVM Imports ───────────────────────────────────────────
-import { toFacilitatorSvmSigner } from '@x402/svm';
-import { ExactSvmScheme } from '@x402/svm/exact/facilitator';
-import { createKeyPairSignerFromBytes } from '@solana/kit';
-import { base58 } from '@scure/base';
 
 // ============================================================
 // EIP-3009 transferWithAuthorization ABI (EVM only)
@@ -56,13 +65,13 @@ const EIP712_TYPES = {
     { name: 'validBefore', type: 'uint256' },
     { name: 'nonce', type: 'bytes32' },
   ],
-};
+} as const;
 
 // ============================================================
 // Viem chain configs (EVM only)
 // Add new chains here when adding EVM network support
 // ============================================================
-const VIEM_CHAINS = {
+const VIEM_CHAINS: Record<number, Chain> = {
   1: mainnet,
   8453: base,
   42161: arbitrum,
@@ -75,30 +84,39 @@ const VIEM_CHAINS = {
   // Add more: import from viem/chains and register here
 };
 
-function getViemChain(network) {
+function getViemChain(network: NetworkConfig): Chain {
+  if (network.chainId === undefined) {
+    throw new Error(`Network ${network.caip2} has no chainId`);
+  }
   const known = VIEM_CHAINS[network.chainId];
   if (known) return known;
 
   // Fallback for unknown chains — provide minimal config
+  const rpcUrl = process.env[network.rpcEnvVar];
+  if (!rpcUrl) {
+    throw new Error(`No RPC URL for ${network.caip2}`);
+  }
   return {
     id: network.chainId,
     name: `Chain ${network.chainId}`,
     nativeCurrency: { name: 'Ether', symbol: 'ETH', decimals: 18 },
     rpcUrls: {
-      default: { http: [process.env[network.rpcEnvVar]] },
+      default: { http: [rpcUrl] },
     },
-  };
+  } as Chain;
 }
 
 // ============================================================
 // Cache public clients per chain (EVM only)
 // ============================================================
-const publicClientCache = new Map();
+const publicClientCache = new Map<number, PublicClient>();
 
-function getPublicClient(network) {
+function getPublicClient(network: NetworkConfig): PublicClient | null {
+  if (network.chainId === undefined) return null;
+
   const cacheKey = network.chainId;
   if (publicClientCache.has(cacheKey)) {
-    return publicClientCache.get(cacheKey);
+    return publicClientCache.get(cacheKey) ?? null;
   }
 
   const rpcUrl = process.env[network.rpcEnvVar];
@@ -113,17 +131,22 @@ function getPublicClient(network) {
 // ============================================================
 // SVM Facilitator — lazy singleton
 // ============================================================
-let _svmFacilitator = null;
-let _svmFacilitatorAddress = null;
-let _svmInitPromise = null;
+interface SvmFacilitatorInstance {
+  facilitator: ExactSvmScheme;
+  feePayerAddress: string;
+}
 
-async function getSvmFacilitator() {
-  if (_svmFacilitator) {
+let _svmFacilitator: ExactSvmScheme | null = null;
+let _svmFacilitatorAddress: string | null = null;
+let _svmInitPromise: Promise<SvmFacilitatorInstance> | null = null;
+
+async function getSvmFacilitator(): Promise<SvmFacilitatorInstance> {
+  if (_svmFacilitator && _svmFacilitatorAddress) {
     return { facilitator: _svmFacilitator, feePayerAddress: _svmFacilitatorAddress };
   }
   if (_svmInitPromise) return _svmInitPromise;
 
-  _svmInitPromise = (async () => {
+  _svmInitPromise = (async (): Promise<SvmFacilitatorInstance> => {
     const privKeyBase58 = process.env.SOLANA_FACILITATOR_PRIVATE_KEY;
     if (!privKeyBase58) {
       throw new Error('SOLANA_FACILITATOR_PRIVATE_KEY not configured');
@@ -133,7 +156,7 @@ async function getSvmFacilitator() {
     const keypairSigner = await createKeyPairSignerFromBytes(privKeyBytes);
 
     const rpcConfig = { defaultRpcUrl: process.env.SOLANA_RPC_URL };
-    const facilitatorSigner = toFacilitatorSvmSigner(keypairSigner, rpcConfig);
+    const facilitatorSigner = toFacilitatorSvmSigner(keypairSigner, rpcConfig as FacilitatorRpcConfig);
     const facilitator = new ExactSvmScheme(facilitatorSigner);
 
     const addresses = facilitatorSigner.getAddresses();
@@ -156,11 +179,25 @@ async function getSvmFacilitator() {
 // ============================================================
 // Helpers
 // ============================================================
-function isSvmNetwork(network) {
+function isSvmNetwork(network: NetworkConfig): boolean {
   return network.vm === 'svm';
 }
 
-async function checkBalance(network, from, requiredAmount) {
+interface BalanceCheckResult {
+  sufficient: boolean;
+  balance?: string;
+  required?: string;
+}
+
+async function checkBalance(
+  network: NetworkConfig,
+  from: Hex,
+  requiredAmount: bigint
+): Promise<BalanceCheckResult> {
+  if (network.chainId === undefined) {
+    return { sufficient: true };
+  }
+
   const client = getPublicClient(network);
   if (!client) {
     console.warn(`[x402] No public client for chain ${network.chainId}, skipping balance check`);
@@ -169,7 +206,7 @@ async function checkBalance(network, from, requiredAmount) {
 
   try {
     const balance = await client.readContract({
-      address: network.token.address,
+      address: network.token.address as Hex,
       abi: ERC3009_ABI,
       functionName: 'balanceOf',
       args: [from],
@@ -180,14 +217,15 @@ async function checkBalance(network, from, requiredAmount) {
     }
     return { sufficient: true, balance: balance.toString() };
   } catch (err) {
-    console.warn(`[x402] Balance check failed (non-critical): ${err.message}`);
+    const error = err as Error;
+    console.warn(`[x402] Balance check failed (non-critical): ${error.message}`);
     return { sufficient: true };
   }
 }
 
-function extractPaymentIdentifier(paymentPayload) {
+function extractPaymentIdentifier(paymentPayload: PaymentPayload): string | null {
   try {
-    const extensions = paymentPayload.extensions || paymentPayload.payload?.extensions;
+    const extensions = paymentPayload.extensions ?? paymentPayload.payload?.extensions;
     if (!extensions) return null;
     const idExt = extensions['payment-identifier'];
     if (idExt?.paymentId && typeof idExt.paymentId === 'string') {
@@ -205,8 +243,16 @@ function extractPaymentIdentifier(paymentPayload) {
 // ============================================================
 // EVM: Verify payment (local, no facilitator)
 // ============================================================
-async function verifyPaymentEvm(paymentPayload, routeConfig) {
+async function verifyPaymentEvm(
+  paymentPayload: PaymentPayload,
+  routeConfig: RouteConfig
+): Promise<VerificationResult> {
   const { authorization, signature } = paymentPayload.payload;
+
+  if (!authorization || !signature) {
+    return { valid: false, reason: 'Missing authorization or signature' };
+  }
+
   const network = SUPPORTED_NETWORKS[paymentPayload.network];
 
   if (!network) return { valid: false, reason: `Unsupported network: ${paymentPayload.network}` };
@@ -232,38 +278,45 @@ async function verifyPaymentEvm(paymentPayload, routeConfig) {
 
   // Check replay via Redis
   const existing = await getNonce(authorization.nonce);
-  if (existing) return { valid: false, reason: `Nonce already used (${existing.status || 'unknown'})` };
+  if (existing) return { valid: false, reason: `Nonce already used (${existing.status ?? 'unknown'})` };
 
   // Verify EIP-712 signature
+  if (network.chainId === undefined) {
+    return { valid: false, reason: 'Network has no chainId' };
+  }
+
   const domain = {
     name: network.token.name,
     version: network.token.version,
     chainId: network.chainId,
-    verifyingContract: network.token.address,
+    verifyingContract: network.token.address as Hex,
   };
   const message = {
-    from: authorization.from,
-    to: authorization.to,
+    from: authorization.from as Hex,
+    to: authorization.to as Hex,
     value: BigInt(authorization.value),
     validAfter: BigInt(authorization.validAfter),
     validBefore: BigInt(authorization.validBefore),
-    nonce: authorization.nonce,
+    nonce: authorization.nonce as Hex,
   };
 
   try {
     const isValid = await verifyTypedData({
-      address: authorization.from,
-      domain, types: EIP712_TYPES,
+      address: authorization.from as Hex,
+      domain,
+      types: EIP712_TYPES,
       primaryType: 'TransferWithAuthorization',
-      message, signature,
+      message,
+      signature: signature as Hex,
     });
     if (!isValid) return { valid: false, reason: 'Signature does not match sender' };
   } catch (err) {
-    return { valid: false, reason: `Signature verification failed: ${err.message}` };
+    const error = err as Error;
+    return { valid: false, reason: `Signature verification failed: ${error.message}` };
   }
 
   // Balance check
-  const balanceCheck = await checkBalance(network, authorization.from, requiredAmount);
+  const balanceCheck = await checkBalance(network, authorization.from as Hex, requiredAmount);
   if (!balanceCheck.sufficient) {
     return { valid: false, reason: `Insufficient balance: has ${balanceCheck.balance}, needs ${balanceCheck.required}` };
   }
@@ -274,30 +327,48 @@ async function verifyPaymentEvm(paymentPayload, routeConfig) {
 // ============================================================
 // EVM: Settle payment on-chain
 // ============================================================
-async function settlePaymentEvm(paymentPayload) {
+async function settlePaymentEvm(paymentPayload: PaymentPayload): Promise<SettlementResult> {
   const { authorization, signature } = paymentPayload.payload;
+
+  if (!authorization || !signature) {
+    throw new Error('Missing authorization or signature');
+  }
+
   const network = SUPPORTED_NETWORKS[paymentPayload.network];
+  if (!network) {
+    throw new Error(`Unsupported network: ${paymentPayload.network}`);
+  }
+
   const rpcUrl = process.env[network.rpcEnvVar];
 
   if (!rpcUrl) throw new Error(`No RPC URL for ${paymentPayload.network} (env: ${network.rpcEnvVar})`);
 
   const chain = getViemChain(network);
-  const account = privateKeyToAccount(process.env.SETTLEMENT_PRIVATE_KEY);
+  const settlementKey = process.env.SETTLEMENT_PRIVATE_KEY;
+  if (!settlementKey) {
+    throw new Error('SETTLEMENT_PRIVATE_KEY not configured');
+  }
+  const account = privateKeyToAccount(settlementKey as Hex);
 
   const walletClient = createWalletClient({ account, chain, transport: http(rpcUrl) });
   const publicClient = createPublicClient({ chain, transport: http(rpcUrl) });
 
-  const { v, r, s } = parseSignature(signature);
+  const { v, r, s } = parseSignature(signature as Hex);
 
   const txHash = await walletClient.writeContract({
-    address: network.token.address,
+    address: network.token.address as Hex,
     abi: ERC3009_ABI,
     functionName: 'transferWithAuthorization',
     args: [
-      authorization.from, authorization.to,
+      authorization.from as Hex,
+      authorization.to as Hex,
       BigInt(authorization.value),
-      BigInt(authorization.validAfter), BigInt(authorization.validBefore),
-      authorization.nonce, Number(v), r, s,
+      BigInt(authorization.validAfter),
+      BigInt(authorization.validBefore),
+      authorization.nonce as Hex,
+      Number(v),
+      r,
+      s,
     ],
   });
 
@@ -310,7 +381,25 @@ async function settlePaymentEvm(paymentPayload) {
 // ============================================================
 // SVM: Verify payment via @x402/svm facilitator
 // ============================================================
-async function verifyPaymentSvm(paymentPayload, routeConfig, network) {
+interface SvmVerifyResultInternal {
+  isValid: boolean;
+  invalidReason?: string;
+  payer?: string;
+}
+
+interface SvmSettleResultInternal {
+  success: boolean;
+  errorReason?: string;
+  transaction?: string;
+  network?: string;
+  payer?: string;
+}
+
+async function verifyPaymentSvm(
+  paymentPayload: PaymentPayload,
+  routeConfig: RouteConfig,
+  network: NetworkConfig
+): Promise<VerificationResult> {
   const { facilitator, feePayerAddress } = await getSvmFacilitator();
 
   const payTo = routeConfig.payToSol;
@@ -327,26 +416,37 @@ async function verifyPaymentSvm(paymentPayload, routeConfig, network) {
     accepted: { scheme: 'exact', network: paymentPayload.network },
   };
   const svmRequirements = {
-    scheme: 'exact', network: paymentPayload.network,
-    amount: amountRequired, asset: network.token.address,
-    payTo, extra: { feePayer: feePayerAddress },
+    scheme: 'exact',
+    network: paymentPayload.network,
+    amount: amountRequired,
+    asset: network.token.address,
+    payTo,
+    extra: { feePayer: feePayerAddress },
   };
 
   try {
-    const result = await facilitator.verify(svmPayload, svmRequirements);
+    // Cast to any to bypass strict type checking for @x402/svm library
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const result = await (facilitator.verify as any)(svmPayload, svmRequirements);
     if (!result.isValid) {
-      return { valid: false, reason: `SVM verification failed: ${result.invalidReason || 'unknown'}` };
+      return { valid: false, reason: `SVM verification failed: ${result.invalidReason ?? 'unknown'}` };
     }
+    invariant(result.payer, 'Payer is required');
     return { valid: true, payer: result.payer };
   } catch (err) {
-    return { valid: false, reason: `SVM verification error: ${err.message}` };
+    const error = err as Error;
+    return { valid: false, reason: `SVM verification error: ${error.message}` };
   }
 }
 
 // ============================================================
 // SVM: Settle payment via @x402/svm facilitator
 // ============================================================
-async function settlePaymentSvm(paymentPayload, routeConfig, network) {
+async function settlePaymentSvm(
+  paymentPayload: PaymentPayload,
+  routeConfig: RouteConfig,
+  network: NetworkConfig
+): Promise<SettlementResult> {
   const { facilitator, feePayerAddress } = await getSvmFacilitator();
 
   const payTo = routeConfig.payToSol;
@@ -363,23 +463,43 @@ async function settlePaymentSvm(paymentPayload, routeConfig, network) {
     accepted: { scheme: 'exact', network: paymentPayload.network },
   };
   const svmRequirements = {
-    scheme: 'exact', network: paymentPayload.network,
-    amount: amountRequired, asset: network.token.address,
-    payTo, extra: { feePayer: feePayerAddress },
+    scheme: 'exact',
+    network: paymentPayload.network,
+    amount: amountRequired,
+    asset: network.token.address,
+    payTo,
+    extra: { feePayer: feePayerAddress },
   };
 
-  const result = await facilitator.settle(svmPayload, svmRequirements);
-  if (!result.success) throw new Error(`SVM settlement failed: ${result.errorReason || 'unknown'}`);
+  // Cast to any to bypass strict type checking for @x402/svm library
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const result = await (facilitator.settle as any)(svmPayload, svmRequirements) as SvmSettleResultInternal;
+  if (!result.success) throw new Error(`SVM settlement failed: ${result.errorReason ?? 'unknown'}`);
+  invariant(result.payer, 'Payer is required');
 
   console.log(`[x402] SVM settled: ${result.transaction} | payer ${result.payer}`);
-  return { txHash: result.transaction, network: result.network || paymentPayload.network, blockNumber: null, payer: result.payer };
+  return {
+    txHash: result.transaction ?? '',
+    network: result.network ?? paymentPayload.network,
+    blockNumber: null,
+    payer: result.payer,
+  };
 }
 
 // ============================================================
 // Facilitator-based verify (EVM, external service)
 // ============================================================
-async function verifyPaymentViaFacilitator(paymentPayload, routeConfig, network) {
-  const { url, apiKeyEnv, networkName, facilitatorContract, x402Version } = network.facilitator;
+async function verifyPaymentViaFacilitator(
+  paymentPayload: PaymentPayload,
+  routeConfig: RouteConfig,
+  network: NetworkConfig
+): Promise<VerificationResult> {
+  const facilitatorConfig = network.facilitator;
+  if (!facilitatorConfig) {
+    return { valid: false, reason: 'No facilitator configured' };
+  }
+
+  const { url, apiKeyEnv, networkName, facilitatorContract, x402Version } = facilitatorConfig;
   const apiKey = process.env[apiKeyEnv];
   if (!apiKey) return { valid: false, reason: `No API key for facilitator (env: ${apiKeyEnv})` };
 
@@ -389,22 +509,28 @@ async function verifyPaymentViaFacilitator(paymentPayload, routeConfig, network)
     ? (basePriceAtomic * (10n ** BigInt(decimalDiff))).toString()
     : basePriceAtomic.toString();
 
-  const facilitatorNetwork = networkName || paymentPayload.network;
-  const facilitatorPayTo = facilitatorContract || routeConfig.payTo;
+  const facilitatorNetwork = networkName ?? paymentPayload.network;
+  const facilitatorPayTo = facilitatorContract ?? routeConfig.payTo;
 
   const body = {
     paymentPayload: {
-      x402Version: x402Version || paymentPayload.x402Version || 2,
+      x402Version: x402Version ?? paymentPayload.x402Version ?? 2,
       scheme: paymentPayload.scheme,
       network: facilitatorNetwork,
       payload: paymentPayload.payload,
     },
     paymentRequirements: {
-      scheme: 'exact', network: facilitatorNetwork,
-      maxAmountRequired: amountRequired, maxTimeoutSeconds: 3600,
-      payTo: facilitatorPayTo, asset: network.token.address,
-      resource: routeConfig.resource || '', description: routeConfig.description,
-      mimeType: routeConfig.mimeType, amount: amountRequired, recipient: facilitatorPayTo,
+      scheme: 'exact',
+      network: facilitatorNetwork,
+      maxAmountRequired: amountRequired,
+      maxTimeoutSeconds: 3600,
+      payTo: facilitatorPayTo,
+      asset: network.token.address,
+      resource: routeConfig.resource ?? '',
+      description: routeConfig.description,
+      mimeType: routeConfig.mimeType,
+      amount: amountRequired,
+      recipient: facilitatorPayTo,
     },
   };
 
@@ -417,25 +543,50 @@ async function verifyPaymentViaFacilitator(paymentPayload, routeConfig, network)
     });
 
     const resText = await res.text();
-    let data;
-    try { data = JSON.parse(resText); } catch {
+    let data: Record<string, unknown>;
+    try {
+      data = JSON.parse(resText) as Record<string, unknown>;
+    } catch {
       return { valid: false, reason: `Facilitator returned non-JSON (${res.status})` };
     }
 
-    if (!res.ok) return { valid: false, reason: `Facilitator error (${res.status}): ${data.error?.message || data.invalidReason || JSON.stringify(data)}` };
-    if (data.isValid) return { valid: true, payer: data.payer };
-    return { valid: false, reason: data.invalidReason || 'Facilitator rejected payment' };
+    if (!res.ok) {
+      const errorObj = data.error as Record<string, unknown> | undefined;
+      return {
+        valid: false,
+        reason: `Facilitator error (${res.status}): ${(errorObj?.message as string) ?? (data.invalidReason as string) ?? JSON.stringify(data)}`,
+      };
+    }
+    if (data.isValid === true) {
+      invariant(data.payer, 'Payer is required');
+      invariant(typeof data.payer === 'string', 'Payer must be a string');
+      return { valid: true, payer: data.payer };
+    }
+    return { valid: false, reason: (data.invalidReason as string) ?? 'Facilitator rejected payment' };
   } catch (err) {
-    return { valid: false, reason: `Facilitator verify failed: ${err.message}` };
+    const error = err as Error;
+    return { valid: false, reason: `Facilitator verify failed: ${error.message}` };
   }
 }
 
 // ============================================================
 // Facilitator-based settle (EVM, external service)
 // ============================================================
-async function settlePaymentViaFacilitator(paymentPayload, routeConfig, network) {
-  const { url, apiKeyEnv, networkName, facilitatorContract, x402Version } = network.facilitator;
+async function settlePaymentViaFacilitator(
+  paymentPayload: PaymentPayload,
+  routeConfig: RouteConfig,
+  network: NetworkConfig
+): Promise<SettlementResult> {
+  const facilitatorConfig = network.facilitator;
+  if (!facilitatorConfig) {
+    throw new Error('No facilitator configured');
+  }
+
+  const { url, apiKeyEnv, networkName, facilitatorContract, x402Version } = facilitatorConfig;
   const apiKey = process.env[apiKeyEnv];
+  if (!apiKey) {
+    throw new Error(`No API key for facilitator (env: ${apiKeyEnv})`);
+  }
 
   const basePriceAtomic = BigInt(routeConfig.priceAtomic);
   const decimalDiff = network.token.decimals - 6;
@@ -443,22 +594,28 @@ async function settlePaymentViaFacilitator(paymentPayload, routeConfig, network)
     ? (basePriceAtomic * (10n ** BigInt(decimalDiff))).toString()
     : basePriceAtomic.toString();
 
-  const facilitatorNetwork = networkName || paymentPayload.network;
-  const facilitatorPayTo = facilitatorContract || routeConfig.payTo;
+  const facilitatorNetwork = networkName ?? paymentPayload.network;
+  const facilitatorPayTo = facilitatorContract ?? routeConfig.payTo;
 
   const body = {
     paymentPayload: {
-      x402Version: x402Version || paymentPayload.x402Version || 2,
+      x402Version: x402Version ?? paymentPayload.x402Version ?? 2,
       scheme: paymentPayload.scheme,
       network: facilitatorNetwork,
       payload: paymentPayload.payload,
     },
     paymentRequirements: {
-      scheme: 'exact', network: facilitatorNetwork,
-      maxAmountRequired: amountRequired, maxTimeoutSeconds: 3600,
-      payTo: facilitatorPayTo, asset: network.token.address,
-      resource: routeConfig.resource || '', description: routeConfig.description,
-      mimeType: routeConfig.mimeType, amount: amountRequired, recipient: facilitatorPayTo,
+      scheme: 'exact',
+      network: facilitatorNetwork,
+      maxAmountRequired: amountRequired,
+      maxTimeoutSeconds: 3600,
+      payTo: facilitatorPayTo,
+      asset: network.token.address,
+      resource: routeConfig.resource ?? '',
+      description: routeConfig.description,
+      mimeType: routeConfig.mimeType,
+      amount: amountRequired,
+      recipient: facilitatorPayTo,
     },
   };
 
@@ -469,35 +626,71 @@ async function settlePaymentViaFacilitator(paymentPayload, routeConfig, network)
     body: JSON.stringify(body),
   });
 
-  const data = await res.json();
-  if (!res.ok || !data.success) {
-    throw new Error(`Facilitator settle failed: ${data.errorReason || data.error?.message || JSON.stringify(data)}`);
+  const data = await res.json() as Record<string, unknown>;
+  if (!res.ok || data.success !== true) {
+    const errorObj = data.error as Record<string, unknown> | undefined;
+    throw new Error(`Facilitator settle failed: ${(data.errorReason as string) ?? (errorObj?.message as string) ?? JSON.stringify(data)}`);
   }
 
-  console.log(`[x402] Settled via facilitator: ${data.transaction} | network ${data.network}`);
-  return { txHash: data.transaction, network: data.network || paymentPayload.network, blockNumber: null, facilitator: url };
+  console.log(`[x402] Settled via facilitator: ${data.transaction as string} | network ${data.network as string}`);
+  return {
+    txHash: data.transaction as string,
+    network: (data.network as string) ?? paymentPayload.network,
+    blockNumber: null,
+    facilitator: url,
+  };
 }
 
 // ============================================================
 // Build 402 Payment Required response
 // ============================================================
-async function buildPaymentRequired(routeConfig, req, routeKey) {
+interface PaymentRequiredResult {
+  headerBase64: string;
+  body: {
+    x402Version: number;
+    accepts: Array<{
+      scheme: string;
+      network: string;
+      amount: string;
+      payTo: string;
+      maxTimeoutSeconds: number;
+      asset: string;
+      extra: Record<string, unknown>;
+    }>;
+    resource: {
+      url: string;
+      description: string;
+      mimeType: string;
+    };
+    extensions: Record<string, unknown>;
+    error?: string;
+    message?: string;
+    reason?: string;
+  };
+}
+
+async function buildPaymentRequired(
+  routeConfig: RouteConfig,
+  req: Request,
+  _routeKey: string
+): Promise<PaymentRequiredResult> {
   const resource = `${req.protocol}://${req.get('host')}${req.originalUrl}`;
   const basePriceAtomic = BigInt(routeConfig.priceAtomic);
 
   // Get SVM fee payer if any SVM networks are active
-  let svmFeePayerAddress = null;
+  let svmFeePayerAddress: string | null = null;
   const hasSvmNetworks = Object.values(SUPPORTED_NETWORKS).some(n => n.vm === 'svm');
   if (hasSvmNetworks) {
     try {
       const { feePayerAddress } = await getSvmFacilitator();
       svmFeePayerAddress = feePayerAddress;
     } catch (err) {
-      console.warn(`[x402] Could not init SVM facilitator for 402 response: ${err.message}`);
+      const error = err as Error;
+      console.warn(`[x402] Could not init SVM facilitator for 402 response: ${error.message}`);
     }
   }
 
-  const accepts = [];
+  const accepts: PaymentRequiredResult['body']['accepts'] = [];
 
   for (const network of Object.values(SUPPORTED_NETWORKS)) {
     const decimalDiff = network.token.decimals - 6;
@@ -510,21 +703,25 @@ async function buildPaymentRequired(routeConfig, req, routeKey) {
       if (!payTo || !svmFeePayerAddress) continue;
 
       accepts.push({
-        scheme: 'exact', network: network.caip2,
-        maxAmountRequired: amountRequired, amount: amountRequired,
-        maxTimeoutSeconds: 3600, resource,
-        description: routeConfig.description, mimeType: routeConfig.mimeType,
-        payTo, asset: network.token.address,
+        scheme: 'exact',
+        network: network.caip2,
+        amount: amountRequired,
+        payTo,
+        maxTimeoutSeconds: 3600,
+        asset: network.token.address,
         extra: { feePayer: svmFeePayerAddress },
       });
     } else {
-      const effectivePayTo = network.facilitator?.facilitatorContract || routeConfig.payTo;
+      const effectivePayTo = network.facilitator?.facilitatorContract ?? routeConfig.payTo;
+      if (!effectivePayTo) continue;
+
       accepts.push({
-        scheme: 'exact', network: network.caip2,
-        maxAmountRequired: amountRequired, amount: amountRequired,
-        maxTimeoutSeconds: 3600, resource,
-        description: routeConfig.description, mimeType: routeConfig.mimeType,
-        payTo: effectivePayTo, asset: network.token.address,
+        scheme: 'exact',
+        network: network.caip2,
+        amount: amountRequired,
+        payTo: effectivePayTo,
+        maxTimeoutSeconds: 3600,
+        asset: network.token.address,
         extra: { name: network.token.name, version: network.token.version },
       });
     }
@@ -535,19 +732,23 @@ async function buildPaymentRequired(routeConfig, req, routeKey) {
   };
 
   const headerPayload = {
-    x402Version: 2, accepts,
+    x402Version: 2,
+    accepts: accepts.map(a => ({
+      ...a,
+      maxAmountRequired: a.amount,
+      resource,
+      description: routeConfig.description,
+      mimeType: routeConfig.mimeType,
+    })),
     resource: { url: resource, description: routeConfig.description, mimeType: routeConfig.mimeType },
     extensions,
   };
 
   const headerBase64 = Buffer.from(JSON.stringify(headerPayload)).toString('base64');
 
-  const strictAccepts = accepts.map(({ scheme, network, amount, payTo, maxTimeoutSeconds, asset, extra }) => ({
-    scheme, network, amount, payTo, maxTimeoutSeconds, asset, extra,
-  }));
-
-  const body = {
-    x402Version: 2, accepts: strictAccepts,
+  const body: PaymentRequiredResult['body'] = {
+    x402Version: 2,
+    accepts,
     resource: { url: resource, description: routeConfig.description, mimeType: routeConfig.mimeType },
     extensions,
   };
@@ -558,30 +759,36 @@ async function buildPaymentRequired(routeConfig, req, routeKey) {
 // ============================================================
 // Express middleware factory
 // ============================================================
-export function x402PaymentMiddleware(routeKey) {
-  return async (req, res, next) => {
+export function x402PaymentMiddleware(routeKey: string): RequestHandler {
+  return async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     const routeConfig = ROUTE_CONFIG[routeKey];
-    if (!routeConfig) return res.status(500).json({ error: `Unknown route: ${routeKey}` });
+    if (!routeConfig) {
+      res.status(500).json({ error: `Unknown route: ${routeKey}` });
+      return;
+    }
 
     // Check for payment header
-    const paymentHeader = req.headers['payment-signature'] || req.headers['x-payment'];
+    const paymentHeader = req.headers['payment-signature'] ?? req.headers['x-payment'];
 
     if (!paymentHeader) {
       const { headerBase64, body } = await buildPaymentRequired(routeConfig, req, routeKey);
       res.set('PAYMENT-REQUIRED', headerBase64);
-      return res.status(402).json({
+      res.status(402).json({
         ...body,
         error: 'Payment required',
         message: `This endpoint requires ${routeConfig.price} USDC. See accepts array for supported networks.`,
       });
+      return;
     }
 
     // Decode payment payload
-    let paymentPayload;
+    let paymentPayload: PaymentPayload;
     try {
-      paymentPayload = JSON.parse(Buffer.from(paymentHeader, 'base64').toString());
+      const headerStr = Array.isArray(paymentHeader) ? (paymentHeader[0] ?? '') : paymentHeader;
+      paymentPayload = JSON.parse(Buffer.from(headerStr, 'base64').toString()) as PaymentPayload;
     } catch {
-      return res.status(400).json({ error: 'Invalid payment payload encoding' });
+      res.status(400).json({ error: 'Invalid payment payload encoding' });
+      return;
     }
 
     // Idempotency check
@@ -593,30 +800,32 @@ export function x402PaymentMiddleware(routeKey) {
         if (cached.response?.paymentResponseHeader) {
           res.set('PAYMENT-RESPONSE', cached.response.paymentResponseHeader);
         }
-        return next();
+        next();
+        return;
       }
     }
 
     // Resolve network
     const network = SUPPORTED_NETWORKS[paymentPayload.network];
     if (!network) {
-      return res.status(402).json({
+      res.status(402).json({
         error: 'Unsupported network',
         reason: `Network ${paymentPayload.network} is not supported`,
       });
+      return;
     }
 
     // Determine payment path
     const useSvm = isSvmNetwork(network);
     const useEvmFacilitator = !useSvm && !!network.facilitator;
 
-    const enrichedRouteConfig = {
+    const enrichedRouteConfig: RouteConfig = {
       ...routeConfig,
       resource: `${req.protocol}://${req.get('host')}${req.originalUrl}`,
     };
 
     // Verify payment
-    let verification;
+    let verification: VerificationResult;
     if (useSvm) {
       verification = await verifyPaymentSvm(paymentPayload, enrichedRouteConfig, network);
     } else if (useEvmFacilitator) {
@@ -630,13 +839,16 @@ export function x402PaymentMiddleware(routeKey) {
       console.warn(`[x402] Verification failed (${pathLabel}): ${verification.reason}`);
       const { headerBase64, body } = await buildPaymentRequired(routeConfig, req, routeKey);
       res.set('PAYMENT-REQUIRED', headerBase64);
-      return res.status(402).json({
-        ...body, error: 'Payment verification failed', reason: verification.reason,
+      res.status(402).json({
+        ...body,
+        error: 'Payment verification failed',
+        reason: verification.reason,
       });
+      return;
     }
 
     // Mark nonce as pending
-    let nonceKey = null;
+    let nonceKey: string | null = null;
     if (useSvm) {
       const txData = paymentPayload.payload?.transaction;
       if (txData) {
@@ -644,26 +856,30 @@ export function x402PaymentMiddleware(routeKey) {
         nonceKey = 'svm:' + crypto.createHash('sha256').update(txData).digest('hex');
       }
     } else if (!useEvmFacilitator) {
-      nonceKey = paymentPayload.payload?.authorization?.nonce;
+      nonceKey = paymentPayload.payload?.authorization?.nonce ?? null;
     }
+
+    const payer = verification.payer ?? paymentPayload.payload?.authorization?.from ?? 'unknown';
 
     if (nonceKey) {
       const acquired = await setNoncePending(nonceKey, {
         network: paymentPayload.network,
-        payer: verification.payer || paymentPayload.payload?.authorization?.from || 'unknown',
-        route: routeKey, vm: useSvm ? 'svm' : 'evm',
+        payer,
+        route: routeKey,
+        vm: useSvm ? 'svm' : 'evm',
       });
       if (!acquired) {
-        return res.status(402).json({
+        res.status(402).json({
           error: 'Payment verification failed',
           reason: 'Nonce already used or settlement in progress',
         });
+        return;
       }
     }
 
     // Settle payment
     try {
-      let settlement;
+      let settlement: SettlementResult;
       if (useSvm) {
         settlement = await settlePaymentSvm(paymentPayload, enrichedRouteConfig, network);
       } else if (useEvmFacilitator) {
@@ -675,16 +891,20 @@ export function x402PaymentMiddleware(routeKey) {
       // Confirm nonce
       if (nonceKey) {
         await setNonceConfirmed(nonceKey, {
-          txHash: settlement.txHash, network: settlement.network,
-          blockNumber: settlement.blockNumber,
-          payer: settlement.payer || paymentPayload.payload?.authorization?.from || 'unknown',
-          route: routeKey, vm: useSvm ? 'svm' : 'evm',
+          txHash: settlement.txHash,
+          network: settlement.network,
+          blockNumber: settlement.blockNumber ?? undefined,
+          payer: settlement.payer ?? payer,
+          route: routeKey,
+          vm: useSvm ? 'svm' : 'evm',
         });
       }
 
-      const paymentResponseData = {
-        success: true, txHash: settlement.txHash,
-        network: settlement.network, blockNumber: settlement.blockNumber,
+      const paymentResponseData: PaymentResponseData = {
+        success: true,
+        txHash: settlement.txHash,
+        network: settlement.network,
+        blockNumber: settlement.blockNumber,
         ...(settlement.facilitator && { facilitator: settlement.facilitator }),
       };
 
@@ -699,8 +919,9 @@ export function x402PaymentMiddleware(routeKey) {
       next();
     } catch (err) {
       if (nonceKey) await deleteNonce(nonceKey);
-      console.error(`[x402] Settlement failed:`, err.message);
-      return res.status(402).json({ error: 'Payment settlement failed', reason: err.message });
+      const error = err as Error;
+      console.error(`[x402] Settlement failed:`, error.message);
+      res.status(402).json({ error: 'Payment settlement failed', reason: error.message });
     }
   };
 }
