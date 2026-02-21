@@ -176,7 +176,7 @@ const SOLANA_MAINNET = {
 // ─── Network Registry ──────────────────────────────────────
 // Add or remove networks here. Only networks with a configured
 // RPC URL in .env will be advertised to agents.
-const ALL_NETWORKS = {
+export const ALL_NETWORKS = {
   'eip155:8453': BASE,
   'eip155:1': ETHEREUM,
   'eip155:42161': ARBITRUM,

@@ -29,13 +29,13 @@ function getRedis() {
 }
 
 // ─── Key Prefixes ──────────────────────────────────────────
-const NONCE_PREFIX = 'x402:nonce:';
-const IDEMPOTENCY_PREFIX = 'x402:idempotency:';
+export const NONCE_PREFIX = 'x402:nonce:';
+export const IDEMPOTENCY_PREFIX = 'x402:idempotency:';
 
 // ─── TTLs (seconds) ────────────────────────────────────────
-const NONCE_PENDING_TTL = 3600;        // 1 hour for pending settlements
-const NONCE_CONFIRMED_TTL = 604800;    // 7 days for confirmed settlements
-const IDEMPOTENCY_TTL = 3600;          // 1 hour for cached responses
+export const NONCE_PENDING_TTL = 3600;        // 1 hour for pending settlements
+export const NONCE_CONFIRMED_TTL = 604800;    // 7 days for confirmed settlements
+export const IDEMPOTENCY_TTL = 3600;          // 1 hour for cached responses
 
 // ============================================================
 // Nonce Operations — Replay Attack Prevention
