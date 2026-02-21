@@ -4,39 +4,39 @@
 // Virtual Machine Types
 // ============================================================
 
-export type VMType = 'evm' | 'svm';
+export type VMType = "evm" | "svm";
 
 // ============================================================
 // Payment Payload Types
 // ============================================================
 
 export interface PaymentAuthorization {
-  from: string;
-  to: string;
-  value: string;
-  validAfter: string;
-  validBefore: string;
-  nonce: string;
+	from: string;
+	to: string;
+	value: string;
+	validAfter: string;
+	validBefore: string;
+	nonce: string;
 }
 
 export interface PaymentPayloadExtensions {
-  'payment-identifier'?: {
-    paymentId: string;
-  };
-  [key: string]: unknown;
+	"payment-identifier"?: {
+		paymentId: string;
+	};
+	[key: string]: unknown;
 }
 
 export interface PaymentPayload {
-  x402Version: number;
-  scheme: string;
-  network: string;
-  payload: {
-    authorization?: PaymentAuthorization;
-    signature?: string;
-    transaction?: string;
-    extensions?: PaymentPayloadExtensions;
-  };
-  extensions?: PaymentPayloadExtensions;
+	x402Version: number;
+	scheme: string;
+	network: string;
+	payload: {
+		authorization?: PaymentAuthorization;
+		signature?: string;
+		transaction?: string;
+		extensions?: PaymentPayloadExtensions;
+	};
+	extensions?: PaymentPayloadExtensions;
 }
 
 // ============================================================
@@ -44,27 +44,27 @@ export interface PaymentPayload {
 // ============================================================
 
 export interface TokenConfig {
-  address: string;
-  name: string;
-  version: string;
-  decimals: number;
+	address: string;
+	name: string;
+	version: string;
+	decimals: number;
 }
 
 export interface FacilitatorConfig {
-  url: string;
-  apiKeyEnv: string;
-  networkName?: string;
-  facilitatorContract?: string;
-  x402Version?: number;
+	url: string;
+	apiKeyEnv: string;
+	networkName?: string;
+	facilitatorContract?: string;
+	x402Version?: number;
 }
 
 export interface NetworkConfig {
-  vm: VMType;
-  caip2: string;
-  chainId?: number;
-  rpcEnvVar: string;
-  token: TokenConfig;
-  facilitator?: FacilitatorConfig;
+	vm: VMType;
+	caip2: string;
+	chainId?: number;
+	rpcEnvVar: string;
+	token: TokenConfig;
+	facilitator?: FacilitatorConfig;
 }
 
 export type NetworkRegistry = Record<string, NetworkConfig>;
@@ -74,18 +74,18 @@ export type NetworkRegistry = Record<string, NetworkConfig>;
 // ============================================================
 
 export interface RouteConfig {
-  path: string;
-  backendName: string;
-  readonly backendUrl: string;
-  backendApiKeyEnv: string;
-  backendApiKeyHeader: string;
-  readonly price: string;
-  readonly priceAtomic: string;
-  readonly payTo: string | undefined;
-  readonly payToSol: string | undefined;
-  description: string;
-  mimeType: string;
-  resource?: string;
+	path: string;
+	backendName: string;
+	readonly backendUrl: string;
+	backendApiKeyEnv: string;
+	backendApiKeyHeader: string;
+	readonly price: string;
+	readonly priceAtomic: string;
+	readonly payTo: string | undefined;
+	readonly payToSol: string | undefined;
+	description: string;
+	mimeType: string;
+	resource?: string;
 }
 
 export type RouteRegistry = Record<string, RouteConfig>;
@@ -94,26 +94,26 @@ export type RouteRegistry = Record<string, RouteConfig>;
 // LMDB Data Types
 // ============================================================
 
-export type NonceStatus = 'pending' | 'confirmed';
+export type NonceStatus = "pending" | "confirmed";
 
 export interface NonceData {
-  status: NonceStatus;
-  timestamp: number;
-  network?: string;
-  payer?: string;
-  route?: string;
-  vm?: VMType;
-  txHash?: string;
-  blockNumber?: number;
+	status: NonceStatus;
+	timestamp: number;
+	network?: string;
+	payer?: string;
+	route?: string;
+	vm?: VMType;
+	txHash?: string;
+	blockNumber?: number;
 }
 
 export interface IdempotencyCache {
-  timestamp: number;
-  response: {
-    paymentResponseHeader?: string;
-    settlement?: PaymentResponseData;
-    [key: string]: unknown;
-  };
+	timestamp: number;
+	response: {
+		paymentResponseHeader?: string;
+		settlement?: PaymentResponseData;
+		[key: string]: unknown;
+	};
 }
 
 // ============================================================
@@ -121,25 +121,25 @@ export interface IdempotencyCache {
 // ============================================================
 
 export interface VerificationResult {
-  valid: boolean;
-  reason?: string;
-  payer?: string;
+	valid: boolean;
+	reason?: string;
+	payer?: string;
 }
 
 export interface SettlementResult {
-  txHash: string;
-  network: string;
-  blockNumber: number | null;
-  payer?: string;
-  facilitator?: string;
+	txHash: string;
+	network: string;
+	blockNumber: number | null;
+	payer?: string;
+	facilitator?: string;
 }
 
 export interface PaymentResponseData {
-  success: boolean;
-  txHash: string;
-  network: string;
-  blockNumber?: number | null;
-  facilitator?: string;
+	success: boolean;
+	txHash: string;
+	network: string;
+	blockNumber?: number | null;
+	facilitator?: string;
 }
 
 // ============================================================
@@ -147,36 +147,36 @@ export interface PaymentResponseData {
 // ============================================================
 
 export interface PaymentAccept {
-  scheme: string;
-  network: string;
-  maxAmountRequired: string;
-  amount: string;
-  maxTimeoutSeconds: number;
-  resource: string;
-  description: string;
-  mimeType: string;
-  payTo: string;
-  asset: string;
-  extra: Record<string, unknown>;
+	scheme: string;
+	network: string;
+	maxAmountRequired: string;
+	amount: string;
+	maxTimeoutSeconds: number;
+	resource: string;
+	description: string;
+	mimeType: string;
+	payTo: string;
+	asset: string;
+	extra: Record<string, unknown>;
 }
 
 export interface PaymentRequiredBody {
-  x402Version: number;
-  accepts: PaymentAccept[];
-  resource: {
-    url: string;
-    description: string;
-    mimeType: string;
-  };
-  extensions: Record<string, unknown>;
-  error?: string;
-  message?: string;
-  reason?: string;
+	x402Version: number;
+	accepts: PaymentAccept[];
+	resource: {
+		url: string;
+		description: string;
+		mimeType: string;
+	};
+	extensions: Record<string, unknown>;
+	error?: string;
+	message?: string;
+	reason?: string;
 }
 
 export interface PaymentRequiredResponse {
-  headerBase64: string;
-  body: PaymentRequiredBody;
+	headerBase64: string;
+	body: PaymentRequiredBody;
 }
 
 // ============================================================
@@ -184,12 +184,12 @@ export interface PaymentRequiredResponse {
 // ============================================================
 
 export interface ProxyOptions {
-  req: Request;
-  targetBase: string;
-  targetPath: string;
-  apiKey?: string;
-  apiKeyHeader?: string;
-  forceMethod?: string;
+	req: Request;
+	targetBase: string;
+	targetPath: string;
+	apiKey?: string;
+	apiKeyHeader?: string;
+	forceMethod?: string;
 }
 
 // ============================================================
@@ -197,11 +197,11 @@ export interface ProxyOptions {
 // ============================================================
 
 export interface PaymentContext {
-  payer?: string;
-  txHash?: string;
-  network?: string;
-  blockNumber?: number | null;
-  facilitator?: string;
+	payer?: string;
+	txHash?: string;
+	network?: string;
+	blockNumber?: number | null;
+	facilitator?: string;
 }
 
 // ============================================================
@@ -209,20 +209,20 @@ export interface PaymentContext {
 // ============================================================
 
 export interface SvmFacilitatorResult {
-  facilitator: unknown;
-  feePayerAddress: string;
+	facilitator: unknown;
+	feePayerAddress: string;
 }
 
 export interface SvmVerifyResult {
-  isValid: boolean;
-  invalidReason?: string;
-  payer?: string;
+	isValid: boolean;
+	invalidReason?: string;
+	payer?: string;
 }
 
 export interface SvmSettleResult {
-  success: boolean;
-  errorReason?: string;
-  transaction?: string;
-  network?: string;
-  payer?: string;
+	success: boolean;
+	errorReason?: string;
+	transaction?: string;
+	network?: string;
+	payer?: string;
 }
