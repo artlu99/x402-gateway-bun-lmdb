@@ -8,8 +8,7 @@ import type { IdempotencyCache, NonceData } from '../types';
 //   1. Nonce tracking (replay attack prevention)
 //   2. Payment-identifier idempotency (duplicate charge prevention)
 //
-// All keys are prefixed with "x402:" for consistency
-// with the previous Redis-based implementation.
+// All keys are prefixed with "x402:"
 //
 // NOTE: TTL is implemented via lazy expiry (checked on read).
 // Expired entries may accumulate until accessed, but storage
@@ -175,7 +174,7 @@ export async function setIdempotencyCache(paymentId: string, responseData: Recor
 // Health Check
 // ============================================================
 
-export async function pingRedis(): Promise<boolean> {
+export async function pingStore(): Promise<boolean> {
   try {
     // LMDB is always available if we got this far
     return true;

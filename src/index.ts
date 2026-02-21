@@ -2,7 +2,7 @@ import { ROUTE_CONFIG, SUPPORTED_NETWORKS } from './config/routes';
 import { withPayment } from './middleware/x402';
 import { proxyToBackend } from './proxy';
 import { CORS_HEADERS, CORS_OPTIONS_RESPONSE, corsJson } from './utils/cors';
-import { pingRedis } from './utils/redis';
+import { pingStore } from './utils/store';
 
 const PORT = process.env.PORT ?? 8080;
 
@@ -40,7 +40,7 @@ const STATIC_RESPONSES = {
 
 // Health check (unprotected)
 async function handleHealth(): Promise<Response> {
-  const redisHealthy = await pingRedis();
+  const storeHealthy = await pingStore();
 
   // Categorize networks
   const networkKeys = Object.keys(SUPPORTED_NETWORKS);
@@ -58,12 +58,12 @@ async function handleHealth(): Promise<Response> {
   }
 
   return corsJson({
-    status: redisHealthy ? 'healthy' : 'degraded',
+    status: storeHealthy ? 'healthy' : 'degraded',
     service: 'x402-gateway',
     version: '1.0.0',
     backends,
     store: {
-      status: redisHealthy ? 'connected' : 'unreachable',
+      status: storeHealthy ? 'connected' : 'unreachable',
       features: ['nonce-tracking', 'idempotency-cache'],
     },
     payment: {
@@ -227,7 +227,7 @@ function createPaidRouteHandler(routeKey: string): (req: Request) => Promise<Res
     return proxyToBackend({
       req,
       targetBase: route.backendUrl,
-      targetPath: '/api/' + resolvedSubpath,
+      targetPath: `/api/${resolvedSubpath}`,
       ...(apiKey && { apiKey }),
       apiKeyHeader: route.backendApiKeyHeader,
     });
@@ -282,8 +282,8 @@ console.log(`[x402-gateway] Listening on port ${PORT}`);
 console.log(`[x402-gateway] Settlement: local (viem + @x402/svm)`);
 
 // Check store connectivity (LMDB is always available if initialized)
-const redisOk = await pingRedis();
-console.log(`[x402-gateway] Store: ${redisOk ? '✓ ready (lmdb)' : '✗ error'}`);
+const storeOk = await pingStore();
+console.log(`[x402-gateway] Store: ${storeOk ? '✓ ready (lmdb)' : '✗ error'}`);
 
 // Log backend status
 console.log(`[x402-gateway] Backends:`);

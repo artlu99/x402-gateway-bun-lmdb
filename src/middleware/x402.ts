@@ -45,7 +45,7 @@ import {
   setIdempotencyCache,
   setNonceConfirmed,
   setNoncePending,
-} from '../utils/redis';
+} from '../utils/store';
 
 // ============================================================
 // EIP-3009 transferWithAuthorization ABI (EVM only)
@@ -290,7 +290,7 @@ async function verifyPaymentEvm(
   if (now < Number(authorization.validAfter)) return { valid: false, reason: 'Payment not yet valid' };
   if (now > Number(authorization.validBefore)) return { valid: false, reason: 'Payment expired' };
 
-  // Check replay via Redis
+  // Check nonce to prevent replay
   const existing = await getNonce(authorization.nonce);
   if (existing) return { valid: false, reason: `Nonce already used (${existing.status ?? 'unknown'})` };
 

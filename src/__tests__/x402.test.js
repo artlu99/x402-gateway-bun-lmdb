@@ -2,7 +2,7 @@
 
 import { beforeEach, describe, expect, mock, test } from 'bun:test';
 
-// Mock Redis before importing x402 (x402 imports redis)
+// Mock store before importing x402 (x402 imports store)
 const mockGetNonce = mock(() => Promise.resolve(null));
 const mockSetNoncePending = mock(() => Promise.resolve(true));
 const mockSetNonceConfirmed = mock(() => Promise.resolve());
@@ -10,7 +10,7 @@ const mockDeleteNonce = mock(() => Promise.resolve());
 const mockGetIdempotencyCache = mock(() => Promise.resolve(null));
 const mockSetIdempotencyCache = mock(() => Promise.resolve());
 
-mock.module('../utils/redis', () => ({
+mock.module('../utils/store', () => ({
   getNonce: mockGetNonce,
   setNoncePending: mockSetNoncePending,
   setNonceConfirmed: mockSetNonceConfirmed,

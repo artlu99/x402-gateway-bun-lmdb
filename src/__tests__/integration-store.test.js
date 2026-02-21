@@ -1,9 +1,7 @@
-// src/__tests__/integration-redis.test.js
-//
 // Integration tests for LMDB store utilities.
 // LMDB is always available locally, no external service needed.
 //
-// Run with: bun test src/__tests__/integration-redis.test.js
+// Run with: bun test src/__tests__/integration-store.test.js
 
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from 'bun:test';
 
@@ -14,15 +12,15 @@ import {
   getNonce,
   IDEMPOTENCY_PREFIX,
   NONCE_PREFIX,
-  pingRedis, 
+  pingStore, 
   setIdempotencyCache,
   setNonceConfirmed,
   setNoncePending
-} from '../utils/redis';
+} from '../utils/store';
 
 // Verify store is ready before running tests
 beforeAll(async () => {
-  const available = await pingRedis();
+  const available = await pingStore();
   if (!available) {
     throw new Error('LMDB store is not available.');
   }
@@ -57,9 +55,9 @@ describe('LMDB Integration Tests', () => {
     createdKeys.clear();
   });
 
-  describe('pingRedis', () => {
+  describe('pingStore', () => {
     test('should return true when LMDB is available', async () => {
-      const result = await pingRedis();
+      const result = await pingStore();
       expect(result).toBe(true);
     });
   });

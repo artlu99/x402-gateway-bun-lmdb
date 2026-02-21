@@ -1,6 +1,4 @@
-// src/__tests__/comprehensive.test.js
-
-import { test, expect, describe } from 'bun:test';
+import { describe, expect, test } from 'bun:test';
 
 // Comprehensive tests covering edge cases and additional functionality
 
@@ -45,7 +43,7 @@ describe('Comprehensive Unit Tests', () => {
     }
 
     function priceToAtomic(priceDecimal, decimals = 6) {
-      return Math.floor(priceDecimal * Math.pow(10, decimals)).toString();
+      return Math.floor(priceDecimal * 10 ** decimals).toString();
     }
 
     test('should parse price strings', () => {
@@ -358,21 +356,21 @@ describe('Comprehensive Unit Tests', () => {
     test('should report healthy status', () => {
       const health = {
         status: 'healthy',
-        redis: { status: 'connected' },
+        store: { status: 'connected' },
       };
 
       expect(health.status).toBe('healthy');
-      expect(health.redis.status).toBe('connected');
+      expect(health.store.status).toBe('connected');
     });
 
     test('should report degraded status', () => {
       const health = {
         status: 'degraded',
-        redis: { status: 'unreachable' },
+        store: { status: 'unreachable' },
       };
 
       expect(health.status).toBe('degraded');
-      expect(health.redis.status).toBe('unreachable');
+      expect(health.store.status).toBe('unreachable');
     });
 
     test('should include backend status', () => {

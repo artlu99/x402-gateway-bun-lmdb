@@ -91,7 +91,7 @@ export interface RouteConfig {
 export type RouteRegistry = Record<string, RouteConfig>;
 
 // ============================================================
-// Redis Data Types
+// LMDB Data Types
 // ============================================================
 
 export type NonceStatus = 'pending' | 'confirmed';

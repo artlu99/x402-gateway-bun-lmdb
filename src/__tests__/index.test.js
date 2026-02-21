@@ -8,14 +8,14 @@ import { describe, expect, test } from 'bun:test';
 describe('Endpoint Response Structures', () => {
   describe('Health endpoint response', () => {
     test('should have correct structure', async () => {
-      const redisHealthy = true;
+      const storeHealthy = true;
       const healthResponse = {
-        status: redisHealthy ? 'healthy' : 'degraded',
+        status: storeHealthy ? 'healthy' : 'degraded',
         service: 'x402-gateway',
         version: '1.0.0',
         backends: { myapi: { configured: true, status: 'ready' } },
-        redis: {
-          status: redisHealthy ? 'connected' : 'unreachable',
+        store: {
+          status: storeHealthy ? 'connected' : 'unreachable',
           features: ['nonce-tracking', 'idempotency-cache'],
         },
         payment: {
@@ -28,13 +28,13 @@ describe('Endpoint Response Structures', () => {
 
       expect(healthResponse.status).toBe('healthy');
       expect(healthResponse.service).toBe('x402-gateway');
-      expect(healthResponse.redis.features).toContain('nonce-tracking');
+      expect(healthResponse.store.features).toContain('nonce-tracking');
       expect(Array.isArray(healthResponse.routes)).toBe(true);
     });
 
-    test('should show degraded when Redis unavailable', () => {
-      const redisHealthy = false;
-      const status = redisHealthy ? 'healthy' : 'degraded';
+    test('should show degraded when store unavailable', () => {
+      const storeHealthy = false;
+      const status = storeHealthy ? 'healthy' : 'degraded';
 
       expect(status).toBe('degraded');
     });

@@ -1,5 +1,3 @@
-// src/__tests__/redis.test.js
-
 import { describe, expect, test } from 'bun:test';
 
 // Import the actual store module exports
@@ -12,11 +10,11 @@ import {
   NONCE_CONFIRMED_TTL,
   NONCE_PENDING_TTL,
   NONCE_PREFIX,
-  pingRedis,
+  pingStore,
   setIdempotencyCache,
   setNonceConfirmed,
   setNoncePending,
-} from '../utils/redis';
+} from '../utils/store';
 
 describe('LMDB Store Utilities - Real Module Tests', () => {
   describe('Key prefixes', () => {
@@ -87,8 +85,8 @@ describe('LMDB Store Utilities - Real Module Tests', () => {
       expect(typeof setIdempotencyCache).toBe('function');
     });
 
-    test('pingRedis should be a function', () => {
-      expect(typeof pingRedis).toBe('function');
+    test('pingStore should be a function', () => {
+      expect(typeof pingStore).toBe('function');
     });
   });
 
@@ -112,8 +110,8 @@ describe('LMDB Store Utilities - Real Module Tests', () => {
       expect(result === null || typeof result === 'object').toBe(true);
     });
 
-    test('pingRedis should return boolean', async () => {
-      const result = await pingRedis();
+    test('pingStore should return boolean', async () => {
+      const result = await pingStore();
       expect(typeof result).toBe('boolean');
     });
 

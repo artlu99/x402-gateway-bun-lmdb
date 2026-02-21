@@ -77,7 +77,7 @@ Client/Agent request
 │  └──────────┘  └──────────┘  └───────────────┘ │
 │       │              │                           │
 │  ┌──────────┐  ┌──────────┐                     │
-│  │  Redis   │  │  RPC     │                     │
+│  │  LMDB    │  │  RPC     │                     │
 │  │ (nonces) │  │ (chains) │                     │
 │  └──────────┘  └──────────┘                     │
 └─────────────────────────────────────────────────┘
@@ -325,7 +325,7 @@ const data = await res.json();
 │   │   └── routes.ts         # Route definitions + network registry
 │   └── utils/
 │       ├── cors.ts           # cors headers
-│       └── redis.ts          # Nonce tracking + idempotency cache
+│       └── store.ts          # Nonce tracking + idempotency cache
 ├── public/
 │   └── index.html            # Landing page (optional)
 ├── .env.example
