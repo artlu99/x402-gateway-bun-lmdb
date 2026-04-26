@@ -34,6 +34,7 @@
 // ============================================================
 
 import type {
+	CreditConfig,
 	NetworkConfig,
 	NetworkRegistry,
 	RouteConfig,
@@ -56,6 +57,28 @@ function usdc(address: string): TokenConfig {
 	};
 }
 
+function usdcv2(address: string): TokenConfig {
+	return {
+		address,
+		name: "USDC",
+		version: "2",
+		decimals: 6,
+	};
+}
+
+// ─── Credit System Defaults ────────────────────────────────
+// Global defaults for the credit system. Each route can override
+// any of these values. Set ENABLE_CREDIT_SYSTEM=true to activate.
+//
+// Credits compensate payers when their paid request settles
+// on-chain but the backend returns an error. The payer can
+// redeem credits on subsequent requests without paying again.
+export const CREDIT_DEFAULTS: CreditConfig = {
+	creditOnStatusCodes: [500, 502, 503, 504],  // Backend errors that earn credits
+	maxCreditsPerPayer: 10,                       // Max credits per payer per route
+	creditTtl: 86400,                             // 24 hours in seconds
+};
+  
 // ─── EVM Network Configs ───────────────────────────────────
 
 // Base (Coinbase L2) — Recommended primary chain (lowest fees)
@@ -118,7 +141,7 @@ const UNICHAIN: NetworkConfig = {
 	caip2: "eip155:130",
 	chainId: 130,
 	rpcEnvVar: "UNICHAIN_RPC_URL",
-	token: usdc("0x078D782b760474a361dDA0AF3839290b0EF57AD6"),
+	token: usdcv2("0x078D782b760474a361dDA0AF3839290b0EF57AD6"),
 };
 
 // Linea
@@ -127,7 +150,43 @@ const LINEA: NetworkConfig = {
 	caip2: "eip155:59144",
 	chainId: 59144,
 	rpcEnvVar: "LINEA_RPC_URL",
-	token: usdc("0x176211869cA2b568f2A7D4EE941E073a821EE1ff"),
+	token: usdcv2("0x176211869cA2b568f2A7D4EE941E073a821EE1ff"),
+};
+
+// Sonic
+const SONIC: NetworkConfig = {
+	vm: 'evm',
+	caip2: 'eip155:146',
+	chainId: 146,
+	rpcEnvVar: 'SONIC_RPC_URL',
+	token: usdcv2('0x29219dd400f2Bf60E5a23d13Be72B486D4038894'),
+};
+  
+// HyperEVM
+const HYPEREVM: NetworkConfig = {
+	vm: 'evm',
+	caip2: 'eip155:999',
+	chainId: 999,
+	rpcEnvVar: 'HYPEREVM_RPC_URL',
+	token: usdcv2('0xb88339CB7199b77E23DB6E890353E22632Ba630f'),
+};
+  
+// Ink
+const INK: NetworkConfig = {
+	vm: 'evm',
+	caip2: 'eip155:57073',
+	chainId: 57073,
+	rpcEnvVar: 'INK_RPC_URL',
+	token: usdcv2('0x2D270e6886d130D724215A266106e6832161EAEd'),
+};
+  
+// Monad
+const MONAD: NetworkConfig = {
+	vm: 'evm',
+	caip2: 'eip155:143',
+	chainId: 143,
+	rpcEnvVar: 'MONAD_RPC_URL',
+	token: usdcv2('0x754704Bc059F8C67012fEd69BC8a327a5aafb603')
 };
 
 // ─── Facilitator-based Networks ────────────────────────────
@@ -193,6 +252,10 @@ export const ALL_NETWORKS: NetworkRegistry = {
 	"eip155:130": UNICHAIN,
 	"eip155:59144": LINEA,
 	"eip155:4326": MEGAETH,
+	'eip155:146': SONIC,
+  	'eip155:999': HYPEREVM,
+	'eip155:57073': INK,
+	'eip155:143': MONAD,
 	"solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp": SOLANA_MAINNET,
 };
 
@@ -273,6 +336,9 @@ export const SUPPORTED_NETWORKS: NetworkRegistry = new Proxy(
 // Optional:
 //   payToSol         — Solana address for SOL payments
 //   bazaarSchema     — Input/output schemas for Bazaar discovery (see BAZAAR_SCHEMAS in x402.ts)
+//   creditOnStatusCodes — Backend status codes that earn a credit (default: [500,502,503,504])
+//   maxCreditsPerPayer  — Max credits per payer per route (default: 10)
+//   creditTtl           — Credit TTL in seconds (default: 86400 / 24 hours)
 
 interface InternalRouteConfig extends RouteConfig {
 	get backendUrl(): string;
@@ -324,6 +390,10 @@ export const ROUTE_CONFIG: RouteRegistry = {
 		description:
 			"Your API description here. This appears in 402 responses and agent discovery.",
 		mimeType: "application/json",
+		// Credit system overrides (optional — falls back to CREDIT_DEFAULTS)
+		// creditOnStatusCodes: [500, 502, 503, 504],
+		// maxCreditsPerPayer: 10,
+		// creditTtl: 86400,
 	}),
 
 	// ── Add more routes here ───────────────────────────────
@@ -339,5 +409,9 @@ export const ROUTE_CONFIG: RouteRegistry = {
 	//   get payToSol(): string | undefined { return process.env.PREMIUM_PAY_TO_ADDRESS_SOL; },
 	//   description: 'Premium tier with higher rate limits and richer data',
 	//   mimeType: 'application/json',
+	//   Credit system overrides (optional — falls back to CREDIT_DEFAULTS)
+	//   creditOnStatusCodes: [500, 502, 503, 504],
+	//   maxCreditsPerPayer: 10,
+	//   creditTtl: 86400,
 	// }),
 };

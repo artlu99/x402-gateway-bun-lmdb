@@ -20,15 +20,20 @@ import {
 	arbitrum,
 	avalanche,
 	base,
+	hyperEvm,
+	ink,
 	linea,
 	mainnet,
 	megaeth,
+	monad,
 	optimism,
 	polygon,
+	sonic,
 	unichain,
 } from "viem/chains";
-import { ROUTE_CONFIG, SUPPORTED_NETWORKS } from "../config/routes";
+import { CREDIT_DEFAULTS, ROUTE_CONFIG, SUPPORTED_NETWORKS } from "../config/routes";
 import type {
+	CreditConfig,
 	NetworkConfig,
 	PaymentContext,
 	PaymentPayload,
@@ -42,9 +47,12 @@ import {
 	corsJsonWithHeaders,
 } from "../utils/cors";
 import {
+	decrementCredit,
 	deleteNonce,
+	getCreditCount,
 	getIdempotencyCache,
 	getNonce,
+	incrementCredit,
 	setIdempotencyCache,
 	setNonceConfirmed,
 	setNoncePending,
@@ -86,6 +94,10 @@ const VIEM_CHAINS: Record<number, Chain> = {
 	59144: linea,
 	130: unichain,
 	4326: megaeth,
+	146: sonic,
+	999: hyperEvm,
+	57073: ink,
+	143: monad,
 	// Add more: import from viem/chains and register here
 };
 
@@ -904,6 +916,20 @@ async function buildPaymentRequired(
 	return { headerBase64, body };
 }
 
+// ─── Credit System Helpers ──────────────────────────────────
+
+function isCreditSystemEnabled() {
+	return process.env.ENABLE_CREDIT_SYSTEM === 'true';
+}
+  
+function getCreditConfig(routeConfig: RouteConfig): CreditConfig {
+	return {
+	  creditOnStatusCodes: routeConfig.creditOnStatusCodes || CREDIT_DEFAULTS.creditOnStatusCodes,
+	  maxCreditsPerPayer: routeConfig.maxCreditsPerPayer ?? CREDIT_DEFAULTS.maxCreditsPerPayer,
+	  creditTtl: routeConfig.creditTtl ?? CREDIT_DEFAULTS.creditTtl,
+	};
+}
+
 // ============================================================
 // Payment verification result (internal)
 // ============================================================
@@ -911,6 +937,9 @@ interface VerifyAndSettleResult {
 	error?: Response;
 	context?: PaymentContext;
 	paymentResponseHeader?: string;
+	creditConsumed?: boolean;
+	didSettle?: boolean;
+	payerAddress?: string;
 }
 
 // ============================================================
@@ -973,6 +1002,9 @@ async function verifyAndSettlePayment(
 			console.log(`[x402] Idempotency hit: ${paymentId.slice(0, 16)}...`);
 			return {
 				context: {},
+				creditConsumed: false,
+				didSettle: false,
+				payerAddress: "unknown",
 				...(cached.response?.paymentResponseHeader && {
 					paymentResponseHeader: cached.response.paymentResponseHeader,
 				}),
@@ -1049,6 +1081,35 @@ async function verifyAndSettlePayment(
 		};
 	}
 
+	// Extract payer address (verified via signature — cannot be spoofed)
+	const payerAddress =
+		verification.payer ??
+		paymentPayload.payload?.authorization?.from ??
+		"unknown";
+
+	// ── Credit check — consume credit if available ───────────
+	let creditConsumed = false;
+
+	if (isCreditSystemEnabled() && payerAddress !== "unknown") {
+		const creditConfig = getCreditConfig(routeConfig);
+
+		if (creditConfig.creditOnStatusCodes.length > 0) {
+			const creditCount = await getCreditCount(payerAddress, routeKey);
+
+			if (creditCount > 0) {
+				creditConsumed = await decrementCredit(payerAddress, routeKey);
+				if (creditConsumed) {
+					console.log(
+						`[x402] Credit consumed: ${payerAddress.slice(0, 10)}... | route: ${routeKey} | remaining: ${creditCount - 1}`,
+					);
+				}
+			}
+		}
+	}
+
+	// ── Settlement (skip if credit was consumed) ─────────────
+
+	if (!creditConsumed) {
 	// Mark nonce as pending
 	let nonceKey: string | null = null;
 	if (useSvm) {
@@ -1060,15 +1121,10 @@ async function verifyAndSettlePayment(
 		nonceKey = paymentPayload.payload?.authorization?.nonce ?? null;
 	}
 
-	const payer =
-		verification.payer ??
-		paymentPayload.payload?.authorization?.from ??
-		"unknown";
-
 	if (nonceKey) {
 		const acquired = await setNoncePending(nonceKey, {
 			network: paymentPayload.network,
-			payer,
+			payer: payerAddress,
 			route: routeKey,
 			vm: useSvm ? "svm" : "evm",
 		});
@@ -1085,7 +1141,7 @@ async function verifyAndSettlePayment(
 		}
 	}
 
-	// Settle payment
+	// Settle payment on-chain
 	try {
 		let settlement: SettlementResult;
 		if (useSvm) {
@@ -1110,7 +1166,7 @@ async function verifyAndSettlePayment(
 				txHash: settlement.txHash,
 				network: settlement.network,
 				blockNumber: settlement.blockNumber ?? undefined,
-				payer: settlement.payer ?? payer,
+				payer: settlement.payer ?? payerAddress,
 				route: routeKey,
 				vm: useSvm ? "svm" : "evm",
 			});
@@ -1138,13 +1194,16 @@ async function verifyAndSettlePayment(
 
 		return {
 			context: {
-				payer: settlement.payer ?? payer,
+				payer: settlement.payer ?? payerAddress,
 				txHash: settlement.txHash,
 				network: settlement.network,
 				blockNumber: settlement.blockNumber,
 				...(settlement.facilitator && { facilitator: settlement.facilitator }),
 			},
 			paymentResponseHeader,
+			creditConsumed: false,
+			didSettle: true,
+			payerAddress,
 		};
 	} catch (err) {
 		if (nonceKey) await deleteNonce(nonceKey);
@@ -1155,6 +1214,17 @@ async function verifyAndSettlePayment(
 				{ error: "Payment settlement failed", reason: error.message },
 				402,
 			),
+		};
+	}
+  } else {
+		// Credit was consumed — proceed to backend without settlement.
+		return {
+			context: {
+				payer: payerAddress,
+			},
+			creditConsumed: true,
+			didSettle: false,
+			payerAddress,
 		};
 	}
 }
@@ -1178,26 +1248,76 @@ export function withPayment(
 			return result.error;
 		}
 
-		// Add payment response header to the handler's response
+		// Call backend handler
 		const response = await handler(req, result.context ?? {});
 
-		if (result.paymentResponseHeader) {
-			const headers = new Headers(response.headers);
-			headers.set("PAYMENT-RESPONSE", result.paymentResponseHeader);
-			// Ensure CORS headers are present
-			for (const [key, value] of Object.entries(CORS_HEADERS)) {
-				if (!headers.has(key)) {
-					headers.set(key, value);
+		// If we settled successfully (not credit-consumed), issue credits based on backend status.
+		// (Express uses res.on('finish'); in Bun we can do it after we have Response.status.)
+		if (
+			result.didSettle &&
+			isCreditSystemEnabled() &&
+			result.payerAddress &&
+			result.payerAddress !== "unknown"
+		) {
+			const routeConfig = ROUTE_CONFIG[routeKey];
+			if (routeConfig) {
+				const creditConfig = getCreditConfig(routeConfig);
+				const statusCode = response.status;
+
+				if (
+					creditConfig.creditOnStatusCodes.length > 0 &&
+					creditConfig.creditOnStatusCodes.includes(statusCode)
+				) {
+					incrementCredit(
+						result.payerAddress,
+						routeKey,
+						creditConfig.maxCreditsPerPayer,
+						creditConfig.creditTtl,
+					)
+						.then((newCount) => {
+							if (newCount >= 0) {
+								console.log(
+									`[x402] Credit issued: ${result.payerAddress?.slice(0, 10)}... | route: ${routeKey} | reason: backend ${statusCode} | total: ${newCount}`,
+								);
+								if (newCount >= creditConfig.maxCreditsPerPayer) {
+									console.warn(
+										`[x402] Credit cap reached: ${result.payerAddress?.slice(0, 10)}... | route: ${routeKey} | cap: ${creditConfig.maxCreditsPerPayer} — backend may be degraded`,
+									);
+								}
+							}
+						})
+						.catch((err) => {
+							const error = err as Error;
+							console.error(
+								`[x402] Credit issuance failed (non-critical): ${error.message}`,
+							);
+						});
 				}
 			}
-			return new Response(response.body, {
-				status: response.status,
-				statusText: response.statusText,
-				headers,
-			});
 		}
 
-		return response;
+		// Attach x402 headers
+		const headers = new Headers(response.headers);
+
+		if (result.paymentResponseHeader) {
+			headers.set("PAYMENT-RESPONSE", result.paymentResponseHeader);
+		}
+		if (result.creditConsumed) {
+			headers.set("X-x402-Credit", "consumed");
+		}
+
+		// Ensure CORS headers are present
+		for (const [key, value] of Object.entries(CORS_HEADERS)) {
+			if (!headers.has(key)) {
+				headers.set(key, value);
+			}
+		}
+
+		return new Response(response.body, {
+			status: response.status,
+			statusText: response.statusText,
+			headers,
+		});
 	};
 }
 

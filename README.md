@@ -23,7 +23,7 @@ No wallets to integrate. No payment pages. Just HTTP headers.
 
 ## Features
 
-- **Multi-chain support** — Accept USDC on Base, Ethereum, Arbitrum, Optimism, Polygon, Avalanche, Unichain, Linea, and Solana out of the box
+- **Multi-chain support** — Accept USDC on Base, Ethereum, Arbitrum, Optimism, Polygon, Avalanche, Unichain, Linea, Sonic, HyperEVM, Ink, Monad, and Solana out of the box
 - **MegaETH support** — USDM (18 decimals) via Meridian facilitator
 - **Hybrid settlement** — Local on-chain settlement via [viem](https://viem.sh) + optional external facilitators
 - **Solana support** — SVM payments via [@x402/svm](https://www.npmjs.com/package/@x402/svm) facilitator pattern
@@ -138,6 +138,10 @@ export const ROUTE_CONFIG = {
 | `UNICHAIN_RPC_URL` | Unichain | ETH (~$2) |
 | `LINEA_RPC_URL` | Linea | ETH (~$2) |
 | `MEGAETH_RPC_URL` | MegaETH | N/A (facilitator pays) |
+| `SONIC_RPC_URL` | Sonic | S (~$2) |
+| `HYPEREVM_RPC_URL` | HyperEVM | HYPE (~$15-20) |
+| `INK_RPC_URL` | Ink | ETH (~$2) |
+| `MONAD_RPC_URL` | Monad | MON (~$2) |
 | `SOLANA_RPC_URL` | Solana | SOL (~$2) |
 
 #### Solana (optional)
@@ -331,6 +335,46 @@ const data = await res.json();
 ├── .env.example
 └── package.json
 ```
+
+## Credit System
+
+The gateway includes an optional credit system that compensates payers when their request settles on-chain but the backend returns an error. Instead of refunding on-chain (which costs gas), the gateway issues credits that can be redeemed on subsequent requests.
+
+### How It Works
+
+1. Agent pays for a request → gateway settles on-chain → backend returns 5xx
+2. Gateway asynchronously issues a credit for that payer + route
+3. On the next request, the agent signs a new payment (proving wallet ownership)
+4. Gateway detects the credit, skips settlement, proxies to backend
+5. Response includes `X-x402-Credit: consumed` header
+
+No on-chain refund, no extra gas, no special tokens. The agent retries identically and it just works.
+
+### Enable
+
+Set `ENABLE_CREDIT_SYSTEM=true` in your `.env`. The system ships disabled by default.
+
+### Configuration
+
+Global defaults are in `CREDIT_DEFAULTS` in `routes.ts`. Override per-route:
+```typescript
+myapi: {
+  // ... other route config ...
+  creditOnStatusCodes: [500, 502, 503, 504],  // Which backend errors earn credits
+  maxCreditsPerPayer: 10,                       // Cap per payer per route
+  creditTtl: 86400,                             // 24 hours
+},
+```
+
+Set `creditOnStatusCodes: []` to disable credits for a specific route.
+
+### Security
+
+- **Identity**: Payer address is extracted from the cryptographically verified signature — cannot be spoofed
+- **Isolation**: Credits are scoped per payer address per route — a credit on one route can't be used on another
+- **Capped**: `maxCreditsPerPayer` prevents unlimited accumulation from a degraded backend
+- **Atomic**: LMDB versioned conditional writes (CAS) prevent race conditions on concurrent requests
+- **Graceful degradation**: If LMDB is down, credits silently disable and normal payment flow continues
 
 ## Security Considerations
 

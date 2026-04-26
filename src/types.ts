@@ -73,6 +73,12 @@ export type NetworkRegistry = Record<string, NetworkConfig>;
 // Route Configuration Types
 // ============================================================
 
+export interface CreditConfig {
+	creditOnStatusCodes: number[];
+	maxCreditsPerPayer: number;
+	creditTtl: number;
+}
+
 export interface RouteConfig {
 	path: string;
 	backendName: string;
@@ -86,6 +92,9 @@ export interface RouteConfig {
 	description: string;
 	mimeType: string;
 	resource?: string;
+	creditOnStatusCodes?: number[];
+	maxCreditsPerPayer?: number;
+	creditTtl?: number;
 }
 
 export type RouteRegistry = Record<string, RouteConfig>;

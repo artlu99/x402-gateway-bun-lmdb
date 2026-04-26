@@ -218,7 +218,10 @@ describe("Route Configuration - Real Module Tests", () => {
 			for (const [caip2, network] of Object.entries(ALL_NETWORKS)) {
 				if (network.vm === "evm" && !network.facilitator) {
 					// Native USDC
-					expect(network.token.name, `${caip2} USDC name`).toBe("USD Coin");
+					expect(
+						["USD Coin", "USDC"].includes(network.token.name),
+						`${caip2} USDC name`,
+					).toBe(true);
 					expect(network.token.version, `${caip2} USDC version`).toBe("2");
 					expect(network.token.decimals, `${caip2} USDC decimals`).toBe(6);
 				}
