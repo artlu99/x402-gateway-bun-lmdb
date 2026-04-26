@@ -98,6 +98,7 @@ const VIEM_CHAINS: Record<number, Chain> = {
 	999: hyperEvm,
 	57073: ink,
 	143: monad,
+	// Abstract (Chain ID 2741) uses getViemChain() fallback — no named export needed.
 	// Add more: import from viem/chains and register here
 };
 
@@ -614,8 +615,9 @@ async function verifyPaymentViaFacilitator(
 
 	const { url, apiKeyEnv, networkName, facilitatorContract, x402Version } =
 		facilitatorConfig;
-	const apiKey = process.env[apiKeyEnv];
-	if (!apiKey)
+	// apiKeyEnv is optional — public facilitators (e.g. Abstract) require no auth.
+	const apiKey = apiKeyEnv ? process.env[apiKeyEnv] : null;
+	if (apiKeyEnv && !apiKey)
 		return {
 			valid: false,
 			reason: `No API key for facilitator (env: ${apiKeyEnv})`,
@@ -661,7 +663,7 @@ async function verifyPaymentViaFacilitator(
 			method: "POST",
 			headers: {
 				"Content-Type": "application/json",
-				Authorization: `Bearer ${apiKey}`,
+				...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
 			},
 			body: JSON.stringify(body),
 		});
@@ -717,8 +719,9 @@ async function settlePaymentViaFacilitator(
 
 	const { url, apiKeyEnv, networkName, facilitatorContract, x402Version } =
 		facilitatorConfig;
-	const apiKey = process.env[apiKeyEnv];
-	if (!apiKey) {
+	// apiKeyEnv is optional — public facilitators (e.g. Abstract) require no auth.
+	const apiKey = apiKeyEnv ? process.env[apiKeyEnv] : null;
+	if (apiKeyEnv && !apiKey) {
 		throw new Error(`No API key for facilitator (env: ${apiKeyEnv})`);
 	}
 
@@ -761,7 +764,7 @@ async function settlePaymentViaFacilitator(
 		method: "POST",
 		headers: {
 			"Content-Type": "application/json",
-			Authorization: `Bearer ${apiKey}`,
+			...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
 		},
 		body: JSON.stringify(body),
 	});

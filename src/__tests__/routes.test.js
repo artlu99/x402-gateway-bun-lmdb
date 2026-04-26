@@ -219,7 +219,11 @@ describe("Route Configuration - Real Module Tests", () => {
 				if (network.vm === "evm" && !network.facilitator) {
 					// Native USDC
 					expect(
-						["USD Coin", "USDC"].includes(network.token.name),
+						[
+							"USD Coin",
+							"USDC",
+							"Bridged USDC (Stargate)"
+						].includes(network.token.name),
 						`${caip2} USDC name`,
 					).toBe(true);
 					expect(network.token.version, `${caip2} USDC version`).toBe("2");
