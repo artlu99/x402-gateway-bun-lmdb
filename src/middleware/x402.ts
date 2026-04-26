@@ -881,21 +881,14 @@ async function buildPaymentRequired(
 		"payment-identifier": { supported: true, required: false },
 	};
 
+	// Header payload: minimal per x402 v2 spec — full details live in the JSON body
+	const headerAccepts = accepts.map(({ scheme, network, amount, payTo, maxTimeoutSeconds, asset, extra }) => ({
+		scheme, network, amount, payTo, maxTimeoutSeconds, asset, extra,
+	}));
+	
 	const headerPayload = {
 		x402Version: 2,
-		accepts: accepts.map((a) => ({
-			...a,
-			maxAmountRequired: a.amount,
-			resource,
-			description: routeConfig.description,
-			mimeType: routeConfig.mimeType,
-		})),
-		resource: {
-			url: resource,
-			description: routeConfig.description,
-			mimeType: routeConfig.mimeType,
-		},
-		extensions,
+		accepts: headerAccepts,
 	};
 
 	const headerBase64 = Buffer.from(JSON.stringify(headerPayload)).toString(
